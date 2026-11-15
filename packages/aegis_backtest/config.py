@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from pydantic import Field
 
-from aegis_core import StrictModel
+from aegis_core import RiskLimit, StrictModel
 from aegis_core.types import FiniteDecimal, NonNegativeDecimal, PositiveDecimal
 
 __all__ = ["BacktestConfig"]
@@ -44,3 +44,12 @@ class BacktestConfig(StrictModel):
 
     #: Close any open position on the last bar so trades are not left open.
     close_at_end: bool = True
+
+    #: Send every entry intent through the real ``RiskGate`` before it can be
+    #: scheduled. Off by default so earlier runs stay comparable; when on, the run
+    #: reports how many intents the gate would have refused.
+    risk_gate_enabled: bool = False
+
+    #: Limits handed to the gate. ``None`` derives them for the traded symbol from
+    #: ``RiskLimit`` defaults; set this to mirror the deployed configuration.
+    risk_limits: RiskLimit | None = None

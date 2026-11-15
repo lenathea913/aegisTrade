@@ -12,8 +12,8 @@ export PYTHONPATH := packages$(PY_SEP)apps
 
 .DEFAULT: help
 .PHONY: help install install-hooks dev paper test test-unit test-integration cov \
-        cov-core lint fmt typecheck check migrate migration seed compose-dev compose-paper \
-        compose-down docker-build logs clean tree
+        cov-core lint fmt typecheck check migrate verify-db migration seed compose-dev compose-paper \
+        compose-down docker-build logs clean tree monitor-once monitor-run
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -59,6 +59,9 @@ check: lint typecheck test ## Everything CI runs locally
 migrate: ## Apply DB migrations to the configured database
 	$(UV) run alembic -c data/migrations/alembic.ini upgrade head
 
+verify-db: ## Verify a real PostgreSQL: migration, triggers, idempotency, round-trips
+	$(PY) scripts/verify_postgres.py
+
 migration: ## Autogenerate a migration: make migration m="add x"
 	@test -n "$(m)" || (echo 'usage: make migration m="message"' && exit 1)
 	$(UV) run alembic -c data/migrations/alembic.ini revision --autogenerate -m "$(m)"
@@ -77,6 +80,12 @@ collector-once: ## One collector pass (paper: CSV seeds -> market.candles; needs
 
 collector-run: ## Collector loop, 60s between passes (needs Postgres)
 	$(PY) -m market_collector --interval 60
+
+monitor-once: ## One position-monitor check (closes positions whose stop/target was hit)
+	$(PY) -m position_monitor --once
+
+monitor-run: ## Position monitor loop, 15s between checks (needs Postgres)
+	$(PY) -m position_monitor --interval 15
 
 docker-build: ## Build the single AegisTrade image
 	$(COMPOSE) -f infra/compose/docker-compose.dev.yml build api

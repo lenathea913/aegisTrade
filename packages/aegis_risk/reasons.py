@@ -45,3 +45,5 @@ class RiskCheck(StrEnum):
     TOTAL_EXPOSURE_WITHIN_LIMIT = "total_exposure_within_limit"
     SYMBOL_EXPOSURE_WITHIN_LIMIT = "symbol_exposure_within_limit"
     LEVERAGE_WITHIN_LIMIT = "leverage_within_limit"
+    #: Recorded instead of the new-risk caps when an intent only reduces a position.
+    RISK_REDUCING_ORDER = "risk_reducing_order"

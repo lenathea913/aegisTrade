@@ -49,6 +49,17 @@ update audit.audit_logs set actor = 'tampered' where id = 1;   -- expect excepti
 delete from audit.audit_logs where id = 1;                     -- expect exception
 ```
 
+## 3b. Prove the deployment with the real database
+
+```bash
+make verify-db    # scripts/verify_postgres.py against AEGIS_DATABASE__URL
+```
+
+It checks the migration output, the append-only triggers (UPDATE/DELETE/TRUNCATE
+must all be refused), `ON CONFLICT DO NOTHING` idempotency, JSONB and `timestamptz`
+round-trips, a paper fill through the pipeline, and the collector's insert counts.
+Exits non-zero on the first class of failure.
+
 ## 4. Generating a new revision
 
 ```bash

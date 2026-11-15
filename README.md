@@ -8,12 +8,16 @@ It is deliberately *not* a profit bot, not a price-prediction system, and it mak
 reproducible, every order checked against explicit risk limits, and every state
 change explainable after the fact.
 
-> Status: **FASE 10 — documentation complete**. Domain, schema, layered config, the
-> eight-rule `aegis_risk` gate, the research stack, the idempotent
-> `market_collector`, the audit-first `aegis_execution` / `aegis_ledger` path, the
-> read-only FastAPI surface, the composed Postgres/Redis/Prometheus/Grafana stack,
-> and the ADR + runbook set exist. Known gaps (no live adapter, no position monitor,
-> no scheduled runner) are listed in `docs/architecture/overview.md`.
+> Status: **FASE 10 — verified against a real database**. Domain, schema, layered
+> config, the eight-rule `aegis_risk` gate, the research stack (now able to run with
+> the real gate), the idempotent `market_collector`, the audit-first
+> `aegis_execution` / `aegis_ledger` path, the `position_monitor` that enforces stops
+> through the gate, the read-only FastAPI surface, the composed
+> Postgres/Redis/Prometheus/Grafana stack, and the ADR + runbook set exist.
+> Schema, triggers, idempotency and the journal were exercised on PostgreSQL 16;
+> the Docker image and compose stack were not (no Docker on the build machine).
+> Remaining gaps (no live adapter, no scheduled entry runner) are listed in
+> `docs/architecture/overview.md`.
 
 ## Risk-first principles
 
@@ -195,6 +199,12 @@ OrderIntent -> RiskGate.evaluate -> ApprovedOrder -> ExecutionGateway -> broker
 
 `TradingPipeline` is that path; nothing else wires the pieces together.
 
+Exits use the same path: `apps/position_monitor` compares the latest closed candle
+with each position's recorded stop/target and sends a closing intent, which the gate
+accepts as risk-reducing (caps for *new* risk are skipped; the kill switch, the
+allow-list, data freshness and stop validity are not). Run it with
+`make monitor-once` or `make monitor-run`.
+
 - **Approval is mandatory.** `ExecutionGateway.execute` accepts `ApprovedOrder`
   only, and checks at runtime too, so an `OrderIntent` (or anything untyped) raises
   `UnapprovedOrderError` instead of trading.
@@ -297,9 +307,9 @@ compose files ship development defaults only.
 
 - [`docs/architecture/overview.md`](docs/architecture/overview.md) — order path, module
   boundaries, data model, failure behaviour and known limitations
-- [`docs/adr/`](docs/adr/README.md) — eight decisions: monolith, decimal money,
+- [`docs/adr/`](docs/adr/README.md) — nine decisions: monolith, decimal money,
   risk-gate authority, append-only audit, pessimistic backtests, paper-first
-  execution, observability, config/secrets
+  execution, observability, config/secrets, protective exits
 - [`docs/runbooks/`](docs/runbooks/README.md) — kill switch, paper stack, migrations,
   market-data outage, backup/restore, ledger reconciliation, rejection triage
 

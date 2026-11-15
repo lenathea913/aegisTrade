@@ -12,7 +12,13 @@ from __future__ import annotations
 from aegis_backtest.config import BacktestConfig
 from aegis_backtest.data import TIMEFRAME_DELTAS, load_candles_csv
 from aegis_backtest.engine import run
-from aegis_backtest.models import BacktestResult, BacktestTrade, EquityPoint, ExitReason
+from aegis_backtest.models import (
+    BacktestResult,
+    BacktestTrade,
+    EquityPoint,
+    ExitReason,
+    RejectedIntent,
+)
 
 __all__ = [
     "TIMEFRAME_DELTAS",
@@ -21,6 +27,7 @@ __all__ = [
     "BacktestTrade",
     "EquityPoint",
     "ExitReason",
+    "RejectedIntent",
     "load_candles_csv",
     "run",
 ]

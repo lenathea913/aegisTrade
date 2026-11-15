@@ -17,7 +17,11 @@ def test_baseline_is_approved(
     decision = evaluate(small_intent, portfolio, limits, market)
 
     assert decision.approved is True
-    assert decision.reasons == tuple(check.value for check in RiskCheck)
+    # A new entry is not a risk-reducing order, so that check does not apply.
+    expected = tuple(
+        check.value for check in RiskCheck if check is not RiskCheck.RISK_REDUCING_ORDER
+    )
+    assert decision.reasons == expected
     assert decision.max_risk_amount == Decimal("100")
 
 

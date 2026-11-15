@@ -23,9 +23,16 @@ ExecutionGateway       only accepts ApprovedOrder; runtime check backs the type
     v  Broker             PaperBroker fills; LiveBroker is a stub that refuses
 Trade                  one executed fill, with fee and funding
     |
-    v  PortfolioLedger    positions, realized PnL windows, equity
+    v  PortfolioLedger    positions, realized PnL windows, equity, exit levels
    +-> audit_logs         append-only trail of every step
 ```
+
+Exits take the same path. `apps/position_monitor` watches the positions the ledger
+holds, compares the latest closed candle with the recorded stop and target, and sends a
+closing intent when a level is crossed. The gate recognises such an intent as
+**risk-reducing** and skips the caps that limit new risk (risk-per-trade, loss floors,
+exposure, leverage) while still enforcing the kill switch, the allow-list, data
+freshness and stop validity — see `docs/adr/0009-protective-exits-through-the-gate.md`.
 
 `TradingPipeline` (`packages/aegis_execution/pipeline.py`) is the only composition
 of those steps. Services call the pipeline instead of wiring gate, gateway and
@@ -48,6 +55,7 @@ rather than a convention (`tests/integration/test_end_to_end_order_flow.py`).
 | `aegis_observability` | JSON logs with redaction, Prometheus metrics | log secrets |
 | `aegis_alerting` | Alert value objects and a log-only transport (stub) | call the network in the MVP |
 | `apps/market_collector` | Idempotent OHLCV ingest into `market.candles` | trade |
+| `apps/position_monitor` | Closes protected positions when their stop or target is touched, through the gate | bypass the gate or call an exchange |
 | `apps/api` | Read-only HTTP surface over the ledger and journal | place orders |
 
 ## Data model
@@ -83,14 +91,19 @@ plain migration.
 
 - No live exchange adapter: `LiveBroker` refuses everything, and there is no
   withdrawal code anywhere.
-- Stop-loss/take-profit levels are recorded and audited, but no loop enforces them
-  on an open position yet.
-- No scheduled trading runner yet: the API never executes, and the paper compose
-  stack runs collector + API only.
+- No scheduled **entry** runner yet: the API never executes, and the paper compose
+  stack runs collector + API, not the position monitor. Entries currently require a
+  caller that composes `TradingPipeline`.
+- The monitor acts on closed candles, not ticks, so a stop is enforced when a bar
+  shows the level was crossed.
+- The monitor restores open positions and their newest stop/target from the tables at
+  startup, but realized PnL history is not reconstructed, so its loss windows restart
+  at zero. The API's ledger is not restored at all.
 - The API has no authentication; it is meant for localhost.
-- Ledger state is not yet restored from the database on restart.
-- Persistence code is tested against PostgreSQL's compiled SQL and fake sessions;
-  the migration has not been executed against a real PostgreSQL on this machine.
+- The schema, triggers and persistence paths were verified against a real PostgreSQL
+  16 instance (migration, append-only triggers, `ON CONFLICT` idempotency, JSONB and
+  `timestamptz` round-trips, live `/health` and `/journal`). What has **not** been run
+  here is the Docker image and the compose stack: this machine has no Docker.
 
 ## Further reading
 

@@ -4,6 +4,11 @@ Idempotency comes from the table's natural primary key
 ``(symbol, timeframe, open_time)`` plus ``ON CONFLICT DO NOTHING``: re-collecting an
 overlapping window is free and can never create a duplicate bar. Re-running the
 collector is therefore always safe, which is what makes restarts and retries cheap.
+
+The inserted count comes from ``RETURNING``, not ``rowcount``: psycopg reports
+``rowcount = -1`` for the multi-row INSERT SQLAlchemy emits here, so counting a
+cursor attribute silently reported "0 inserted" even when every row was new (found
+against a real PostgreSQL 16 instance, not against fakes).
 """
 
 from __future__ import annotations
@@ -74,12 +79,16 @@ class CandleStore:
         """Insert new bars, ignore existing ones, and return the inserted count."""
         if not candles:
             return 0
-        statement = build_upsert(candles, exchange=exchange, source=source)
+        table = cast(Table, CandleRow.__table__)
+        statement = build_upsert(candles, exchange=exchange, source=source).returning(
+            table.c.open_time
+        )
         # A SAVEPOINT keeps one bad batch from poisoning the caller's transaction,
-        # so the remaining series of a pass still collect normally.
+        # so the remaining series of a pass still collect normally. RETURNING rows
+        # are exactly the rows this statement inserted: conflicting ones are skipped.
         with self._session.begin_nested():
             result = cast(
                 CursorResult[Any],
                 self._session.execute(statement),
             )
-        return max(int(result.rowcount or 0), 0)
+            return len(result.all())

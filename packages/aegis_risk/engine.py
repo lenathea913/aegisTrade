@@ -13,6 +13,12 @@ become) an ``ApprovedOrder``. Design choices worth knowing:
   quote cannot be measured, so it is rejected rather than guessed.
 * **The kill switch is an argument, not a config read**, and ``RiskGate`` binds it
   once so a caller cannot forget it.
+* **A protective exit is judged, not blocked.** An intent that only reduces an
+  existing position (opposite side, quantity not exceeding it) skips the caps that
+  exist to limit *new* exposure — risk-per-trade, loss windows, exposure and
+  leverage. Otherwise a daily-loss halt would trap an open position and turn a
+  bounded loss into an unbounded one. The kill switch, the symbol allow-list, the
+  market-data freshness rule, the entry price and the stop-side check still apply.
 """
 
 from __future__ import annotations
@@ -62,6 +68,14 @@ def _symbol_exposure(state: PortfolioState, market_context: MarketContext, symbo
     return abs(position.qty) * _mark_price(position, market_context)
 
 
+def _reduces_position(intent: OrderIntent, state: PortfolioState) -> bool:
+    """True when ``intent`` can only shrink the current position, never open/extend."""
+    position = state.position(intent.symbol)
+    if position.side is None:
+        return False
+    return intent.side is position.side.opposite and intent.qty <= position.abs_qty
+
+
 def evaluate(
     intent: OrderIntent,
     portfolio_state: PortfolioState,
@@ -89,6 +103,7 @@ def evaluate(
     """
     failures: list[str] = []
     checks: list[str] = []
+    reducing = _reduces_position(intent, portfolio_state)
 
     equity = portfolio_state.equity
 
@@ -116,28 +131,32 @@ def evaluate(
     else:
         checks.append(RiskCheck.MARKET_DATA_FRESH.value)
 
-    # Rule 3: realized loss windows. Reaching the floor is already too late.
-    daily_floor = equity * risk_limits.max_daily_loss_pct / _HUNDRED
-    if -portfolio_state.daily_realized_pnl >= daily_floor:
-        failures.append(
-            _detail(
-                RejectReason.DAILY_LOSS_LIMIT_REACHED,
-                f"{portfolio_state.daily_realized_pnl}>=-{daily_floor}",
-            )
-        )
+    if reducing:
+        # New-risk caps do not apply to a position-reducing order (see module docstring).
+        checks.append(RiskCheck.RISK_REDUCING_ORDER.value)
     else:
-        checks.append(RiskCheck.DAILY_LOSS_WITHIN_LIMIT.value)
+        # Rule 3: realized loss windows. Reaching the floor is already too late.
+        daily_floor = equity * risk_limits.max_daily_loss_pct / _HUNDRED
+        if -portfolio_state.daily_realized_pnl >= daily_floor:
+            failures.append(
+                _detail(
+                    RejectReason.DAILY_LOSS_LIMIT_REACHED,
+                    f"{portfolio_state.daily_realized_pnl}>=-{daily_floor}",
+                )
+            )
+        else:
+            checks.append(RiskCheck.DAILY_LOSS_WITHIN_LIMIT.value)
 
-    weekly_floor = equity * risk_limits.max_weekly_loss_pct / _HUNDRED
-    if -portfolio_state.weekly_realized_pnl >= weekly_floor:
-        failures.append(
-            _detail(
-                RejectReason.WEEKLY_LOSS_LIMIT_REACHED,
-                f"{portfolio_state.weekly_realized_pnl}>=-{weekly_floor}",
+        weekly_floor = equity * risk_limits.max_weekly_loss_pct / _HUNDRED
+        if -portfolio_state.weekly_realized_pnl >= weekly_floor:
+            failures.append(
+                _detail(
+                    RejectReason.WEEKLY_LOSS_LIMIT_REACHED,
+                    f"{portfolio_state.weekly_realized_pnl}>=-{weekly_floor}",
+                )
             )
-        )
-    else:
-        checks.append(RiskCheck.WEEKLY_LOSS_WITHIN_LIMIT.value)
+        else:
+            checks.append(RiskCheck.WEEKLY_LOSS_WITHIN_LIMIT.value)
 
     # Entry price: an explicit reference price, else the current quote.
     entry_price = intent.price if intent.price is not None else (quote.price if quote else None)
@@ -159,6 +178,9 @@ def evaluate(
 
     risk_amount = abs(entry_price - intent.stop_loss) * intent.qty
     notional = intent.qty * entry_price
+
+    if reducing:
+        return _finalise(failures, checks, risk_amount)
 
     # Rule 2: risk per trade.
     max_risk_amount = equity * risk_limits.max_risk_per_trade_pct / _HUNDRED
@@ -212,9 +234,12 @@ def evaluate(
     else:
         checks.append(RiskCheck.LEVERAGE_WITHIN_LIMIT.value)
 
+    return _finalise(failures, checks, risk_amount)
+
+
+def _finalise(failures: list[str], checks: list[str], risk_amount: Decimal) -> RiskDecision:
     if failures:
         return RiskDecision(approved=False, reasons=tuple(failures), max_risk_amount=Decimal("0"))
-
     return RiskDecision(approved=True, reasons=tuple(checks), max_risk_amount=risk_amount)
 
 

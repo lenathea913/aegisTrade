@@ -1,0 +1,199 @@
+"""Closing positions when their stop or target is touched.
+
+Rules, in order:
+
+1. Only open positions **with** protection are watched. A position without a stop
+   cannot be monitored into safety, so it is reported and left alone rather than
+   closing on a guess.
+2. The trigger uses the latest closed price: ``mark <= stop`` for a long,
+   ``mark >= stop`` for a short; the target mirrors it.
+3. The exit is an ordinary ``OrderIntent`` (MARKET, opposite side, the position's
+   full quantity) whose stop sits just beyond the current mark, so the intent is
+   internally valid and the gate can measure it. It goes through ``TradingPipeline``,
+   so a rejection is recorded in the audit trail exactly like any other rejection.
+4. A position that is already flat is skipped: the ledger drops its protection when
+   the position closes, so this is only a guard against a race in the caller.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from enum import StrEnum
+
+from aegis_core import (
+    MarketContext,
+    MarketQuote,
+    OrderIntent,
+    OrderType,
+    Position,
+    Side,
+    utc_now,
+)
+from aegis_execution import PipelineResult, TradingPipeline
+from aegis_ledger import PortfolioLedger, PositionProtection
+from aegis_observability import get_logger
+from position_monitor.quotes import QuoteSource
+
+__all__ = ["ExitTrigger", "MonitorAction", "PositionMonitor"]
+
+#: Distance between the mark and the stop attached to a closing intent (0.2 %).
+#: It only has to be non-zero: the intent is closing, not opening, exposure.
+_STOP_BUFFER = Decimal("0.002")
+
+
+class ExitTrigger(StrEnum):
+    """Why the monitor decided to close."""
+
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+
+
+@dataclass(frozen=True)
+class MonitorAction:
+    """One attempt to close a position, with the pipeline's verdict."""
+
+    symbol: str
+    trigger: ExitTrigger
+    mark_price: Decimal
+    intent: OrderIntent
+    result: PipelineResult
+    level: Decimal
+
+    @property
+    def closed(self) -> bool:
+        """True only when the gate approved *and* the broker filled the exit."""
+        return self.result.filled
+
+
+class PositionMonitor:
+    """Watch protected positions and close them when a level is touched."""
+
+    def __init__(
+        self,
+        *,
+        ledger: PortfolioLedger,
+        pipeline: TradingPipeline,
+        quotes: QuoteSource,
+        clock: Callable[[], datetime] = utc_now,
+        strategy_id: str = "position_monitor",
+        protect_take_profit: bool = True,
+    ) -> None:
+        self._ledger = ledger
+        self._pipeline = pipeline
+        self._quotes = quotes
+        self._clock = clock
+        self._strategy_id = strategy_id
+        self._protect_take_profit = protect_take_profit
+        self._logger = get_logger("aegis.position_monitor")
+
+    @property
+    def ledger(self) -> PortfolioLedger:
+        """The book this monitor watches (restored by the CLI at startup)."""
+        return self._ledger
+
+    def check(self) -> tuple[MonitorAction, ...]:
+        """Evaluate every protected position once; return the exit attempts."""
+        actions: list[MonitorAction] = []
+        for protection in self._ledger.protections:
+            action = self._check_one(protection)
+            if action is not None:
+                actions.append(action)
+        return tuple(actions)
+
+    # ------------------------------------------------------------- internals
+
+    def _check_one(self, protection: PositionProtection) -> MonitorAction | None:
+        position = self._ledger.position(protection.symbol)
+        if position.is_flat:
+            return None
+
+        quote = self._quotes.latest(protection.symbol)
+        if quote is None:
+            self._logger.warning(
+                "monitor_no_quote", symbol=protection.symbol, reason="no candle stored"
+            )
+            return None
+
+        trigger, level = self._trigger(protection, quote.price)
+        if trigger is None:
+            return None
+
+        now = self._clock()
+        intent = self._exit_intent(protection, position, quote, trigger, now)
+        market = MarketContext(
+            quotes=(MarketQuote(symbol=quote.symbol, price=quote.price, as_of=quote.as_of),),
+            now=now,
+        )
+        result = self._pipeline.process(intent, market)
+
+        self._logger.info(
+            "monitor_exit_sent",
+            symbol=protection.symbol,
+            trigger=trigger.value,
+            mark=str(quote.price),
+            filled=result.filled,
+            approved=result.decision.approved,
+        )
+        if not result.decision.approved:
+            self._logger.warning(
+                "monitor_exit_rejected",
+                symbol=protection.symbol,
+                reasons=list(result.reasons),
+            )
+        return MonitorAction(
+            symbol=protection.symbol,
+            trigger=trigger,
+            mark_price=quote.price,
+            intent=intent,
+            result=result,
+            level=level,
+        )
+
+    def _trigger(
+        self, protection: PositionProtection, mark: Decimal
+    ) -> tuple[ExitTrigger | None, Decimal]:
+        """Return the trigger (with its level) that ``mark`` has crossed, if any."""
+        if protection.side is Side.BUY:
+            if mark <= protection.stop_loss:
+                return ExitTrigger.STOP_LOSS, protection.stop_loss
+            target = protection.take_profit
+            if self._protect_take_profit and target is not None and mark >= target:
+                return ExitTrigger.TAKE_PROFIT, target
+            return None, protection.stop_loss
+
+        if mark >= protection.stop_loss:
+            return ExitTrigger.STOP_LOSS, protection.stop_loss
+        target = protection.take_profit
+        if self._protect_take_profit and target is not None and mark <= target:
+            return ExitTrigger.TAKE_PROFIT, target
+        return None, protection.stop_loss
+
+    def _exit_intent(
+        self,
+        protection: PositionProtection,
+        position: Position,
+        quote: MarketQuote,
+        trigger: ExitTrigger,
+        now: datetime,
+    ) -> OrderIntent:
+        """Build the closing intent; the stop sits just beyond the mark."""
+        closing_side = Side.SELL if protection.side is Side.BUY else Side.BUY
+        offset = quote.price * _STOP_BUFFER
+        stop_loss = quote.price + offset if closing_side is Side.SELL else quote.price - offset
+        level = protection.stop_loss if trigger is ExitTrigger.STOP_LOSS else protection.take_profit
+
+        return OrderIntent(
+            symbol=protection.symbol,
+            side=closing_side,
+            order_type=OrderType.MARKET,
+            qty=position.abs_qty,
+            price=quote.price,
+            stop_loss=stop_loss,
+            take_profit=None,
+            strategy_id=self._strategy_id,
+            reason=f"position_monitor: {trigger.value} touched at {quote.price} (level {level})",
+            created_at=now,
+        )

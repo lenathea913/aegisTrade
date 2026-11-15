@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TypeVar
 
 __all__ = ["RetryPolicy", "call_with_retry"]
-
-T = TypeVar("T")
 
 
 class RetryPolicy:
@@ -45,7 +42,7 @@ class RetryPolicy:
         raw = self.initial_delay * (self.multiplier ** (attempt - 1))
         return min(self.max_delay, raw * self._jitter())
 
-    def call(self, operation: Callable[[], T]) -> T:
+    def call[T](self, operation: Callable[[], T]) -> T:
         """Run ``operation``, retrying on any exception until attempts run out.
 
         The last exception is re-raised unchanged so callers see the real cause.
@@ -64,6 +61,6 @@ class RetryPolicy:
         raise last_error
 
 
-def call_with_retry(operation: Callable[[], T], policy: RetryPolicy | None = None) -> T:
+def call_with_retry[T](operation: Callable[[], T], policy: RetryPolicy | None = None) -> T:
     """Module-level convenience wrapper around ``RetryPolicy.call``."""
     return (policy or RetryPolicy()).call(operation)

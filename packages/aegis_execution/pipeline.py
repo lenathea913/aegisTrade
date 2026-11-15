@@ -32,6 +32,7 @@ from aegis_ledger import (
     LedgerUpdate,
     LedgerWriter,
     PortfolioLedger,
+    PositionProtection,
 )
 from aegis_risk import RiskGate
 
@@ -179,6 +180,19 @@ class TradingPipeline:
         )
 
         update = self._ledger.apply_trade(trade)
+        if not update.position.is_flat and update.position.side is not None:
+            # The approved levels travel with the position, so anything watching the
+            # ledger (e.g. the position monitor) knows where the exit belongs.
+            self._ledger.set_protection(
+                PositionProtection(
+                    symbol=update.position.symbol,
+                    side=update.position.side,
+                    qty=update.position.abs_qty,
+                    stop_loss=approved.stop_loss,
+                    take_profit=approved.take_profit,
+                    strategy_id=approved.strategy_id,
+                )
+            )
         events.append(
             AuditEvent(
                 event_type=EventType.TRADE_RECORDED,

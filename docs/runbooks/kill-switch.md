@@ -41,10 +41,15 @@ docker compose -f infra/compose/docker-compose.paper.yml exec postgres \
 
 ## 3. What the kill switch does **not** do
 
-- It does not close open positions. There is no automatic flatten yet; a position
-  stays open with its recorded stop level until something closes it.
+- It does not close open positions **automatically** — and it deliberately stops the
+  position monitor from doing so, because a halt means "stop touching the market".
+  While the switch is on, protect the book by hand (or accept the exposure) and
+  expect every exit attempt to appear as a `risk_rejected` event with
+  `kill_switch_active`.
 - It does not stop the collector (market data keeps flowing, which is intentional:
   you want data when you investigate).
+- It does not stop the position monitor; the monitor keeps running and its exits are
+  rejected, which is visible in its log and in `/journal`.
 - It does not stop the API from serving reports.
 
 ## 4. Turn it back off

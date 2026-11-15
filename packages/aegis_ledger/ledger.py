@@ -23,12 +23,49 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from aegis_core import PortfolioState, Position, Trade, utc_now
+from aegis_core import PortfolioState, Position, Side, Trade, utc_now
 from aegis_ledger.errors import LedgerError
 
-__all__ = ["LedgerUpdate", "PortfolioLedger", "RealizedEvent"]
+__all__ = ["LedgerUpdate", "PortfolioLedger", "PositionProtection", "RealizedEvent"]
 
 _ZERO = Decimal("0")
+
+
+@dataclass(frozen=True)
+class PositionProtection:
+    """The exit levels attached to an open position.
+
+    ``PortfolioLedger`` keeps these beside the position so a monitor can answer
+    "where is my stop?" without re-reading the order table, and so the levels move
+    with the state that produced them (a flat position has no protection).
+    """
+
+    symbol: str
+    side: Side
+    qty: Decimal
+    stop_loss: Decimal
+    take_profit: Decimal | None = None
+    strategy_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.qty <= 0:
+            raise LedgerError("protection qty must be greater than 0")
+        if self.stop_loss <= 0:
+            raise LedgerError("protection stop_loss must be greater than 0")
+        if self.take_profit is not None and self.take_profit <= 0:
+            raise LedgerError("protection take_profit must be greater than 0")
+        if (
+            self.side is Side.BUY
+            and self.take_profit is not None
+            and self.stop_loss >= self.take_profit
+        ):
+            raise LedgerError("long protection needs stop_loss < take_profit")
+        if (
+            self.side is Side.SELL
+            and self.take_profit is not None
+            and self.stop_loss <= self.take_profit
+        ):
+            raise LedgerError("short protection needs stop_loss > take_profit")
 
 
 @dataclass(frozen=True)
@@ -59,6 +96,7 @@ class PortfolioLedger:
     _positions: dict[str, Position] = field(default_factory=dict, repr=False)
     _marks: dict[str, Decimal] = field(default_factory=dict, repr=False)
     _realized: list[RealizedEvent] = field(default_factory=list, repr=False)
+    _protections: dict[str, PositionProtection] = field(default_factory=dict, repr=False)
     _clock: Callable[[], datetime] = field(default=utc_now, repr=False)
 
     def __post_init__(self) -> None:
@@ -96,6 +134,14 @@ class PortfolioLedger:
         wanted = Position.flat(symbol).symbol
         return self._marks.get(wanted)
 
+    def protection(self, symbol: str) -> PositionProtection | None:
+        """Exit levels for ``symbol``, or ``None`` when the position is unprotected."""
+        return self._protections.get(Position.flat(symbol).symbol)
+
+    @property
+    def protections(self) -> tuple[PositionProtection, ...]:
+        return tuple(self._protections.values())
+
     def realized_between(self, start: datetime, end: datetime | None = None) -> Decimal:
         """Realized PnL for events in ``[start, end]`` (``end`` defaults to now)."""
         upper = end if end is not None else self._clock()
@@ -115,6 +161,10 @@ class PortfolioLedger:
         realized_delta = (updated.realized_pnl - current.realized_pnl) - trade.fee + trade.funding
         self._positions[updated.symbol] = updated
         self._marks[updated.symbol] = trade.price
+        if updated.is_flat:
+            # A flat position cannot have a stop; leaving one behind would let a
+            # monitor fire an exit against exposure that no longer exists.
+            self._protections.pop(updated.symbol, None)
         self._realized.append(
             RealizedEvent(
                 amount=realized_delta,
@@ -143,6 +193,16 @@ class PortfolioLedger:
         for symbol, price in prices.items():
             self.mark_price(symbol, price)
 
+    def set_protection(self, protection: PositionProtection) -> None:
+        """Attach exit levels to an open position (replacing any previous ones)."""
+        wanted = Position.flat(protection.symbol).symbol
+        if self.position(wanted).is_flat:
+            raise LedgerError(f"cannot protect a flat position: {wanted}")
+        self._protections[wanted] = protection
+
+    def clear_protection(self, symbol: str) -> None:
+        self._protections.pop(Position.flat(symbol).symbol, None)
+
     # ------------------------------------------------------------ snapshots
 
     def snapshot(self, *, now: datetime | None = None) -> PortfolioState:
@@ -168,6 +228,7 @@ class PortfolioLedger:
         for position in positions:
             self._positions[position.symbol] = position
         self._realized[:] = list(realized)
+        self._protections.clear()
 
     def _marked_positions(self) -> tuple[Position, ...]:
         return tuple(

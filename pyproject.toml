@@ -3,7 +3,7 @@ name = "aegis-trade"
 version = "0.1.0"
 description = "AegisTrade - risk-first personal crypto trading platform (research, paper trading, audit)"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "AegisTrade" }]
 dependencies = [
@@ -47,7 +47,7 @@ package = false
 # Ruff (lint + format)
 # ---------------------------------------------------------------------------
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 src = ["packages", "apps", "tests"]
 extend-exclude = ["data", "infra"]
@@ -68,13 +68,13 @@ ignore = [
 known-first-party = ["aegis_core", "aegis_strategy", "aegis_backtest", "aegis_risk",
                       "aegis_metrics", "aegis_db", "aegis_config", "aegis_observability",
                       "aegis_execution", "aegis_ledger", "aegis_alerting", "api",
-                      "market_collector"]
+                      "market_collector", "position_monitor"]
 
 # ---------------------------------------------------------------------------
 # mypy
 # ---------------------------------------------------------------------------
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 mypy_path = "packages:apps"
 files = ["packages", "apps", "tests"]
 strict = true
@@ -92,9 +92,8 @@ exclude = ["(^|/)data/migrations/.*"]
 module = ["tests.*"]
 disallow_untyped_defs = false
 
-# numpy/pandas ship stubs that use PEP 695 syntax (Python 3.12+). Since we type-check
-# against the 3.11 target, do not analyse their stubs; numpy/pandas call sites get
-# explicit annotations of their own from FASE 5 onward.
+# numpy/pandas stubs are heavy and version-brittle; do not analyse them. Every call
+# site carries its own explicit annotations, so nothing is lost by skipping them.
 [[tool.mypy.overrides]]
 module = ["numpy", "numpy.*", "pandas", "pandas.*"]
 follow_imports = "skip"

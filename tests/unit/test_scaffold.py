@@ -62,11 +62,11 @@ def test_repository_layout_exists() -> None:
     assert not missing_files, f"missing files: {missing_files}"
 
 
-def test_pyproject_targets_python_311_and_pydantic_v2() -> None:
+def test_pyproject_targets_python_312_and_pydantic_v2() -> None:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = data["project"]
 
-    assert project["requires-python"].startswith(">=3.11")
+    assert project["requires-python"].startswith(">=3.12")
     deps = project["dependencies"]
     assert any(d.startswith("pydantic>=") for d in deps)
     assert not any(d.startswith("pydantic<2") for d in deps)

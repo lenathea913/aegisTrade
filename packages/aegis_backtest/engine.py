@@ -21,14 +21,32 @@ from __future__ import annotations
 
 import statistics
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 
 from aegis_backtest.config import BacktestConfig
-from aegis_backtest.models import BacktestResult, BacktestTrade, EquityPoint, ExitReason
-from aegis_core import Candle, OrderIntent, OrderType, Side, Timeframe
+from aegis_backtest.models import (
+    BacktestResult,
+    BacktestTrade,
+    EquityPoint,
+    ExitReason,
+    RejectedIntent,
+)
+from aegis_core import (
+    Candle,
+    MarketContext,
+    MarketQuote,
+    OrderIntent,
+    OrderType,
+    PortfolioState,
+    Position,
+    RiskLimit,
+    Side,
+    Timeframe,
+)
 from aegis_metrics import compute_metrics
+from aegis_risk import RiskGate
 from aegis_strategy import StrategyBase
 
 __all__ = ["run"]
@@ -233,6 +251,37 @@ class _Simulator:
                 price = _with_slippage(self.take_profit, 1, slippage)
                 self.close(price, candle.open_time, ExitReason.TAKE_PROFIT, taker)
 
+    def portfolio_state(self, moment: datetime, mark: Decimal) -> PortfolioState:
+        """Snapshot the simulated book as the risk engine would see it.
+
+        Realized windows are recomputed from closed trades, so a gated backtest
+        applies the same daily/weekly loss floors as the live ledger.
+        """
+        day_start = datetime(moment.year, moment.month, moment.day, tzinfo=UTC)
+        week_start = day_start - timedelta(days=moment.weekday())
+        daily = sum((trade.net_pnl for trade in self.trades if trade.exit_time >= day_start), _ZERO)
+        weekly = sum(
+            (trade.net_pnl for trade in self.trades if trade.exit_time >= week_start), _ZERO
+        )
+
+        positions: tuple[Position, ...] = ()
+        if self.is_open and self.entry_price is not None and self.entry_time is not None:
+            positions = (
+                Position(
+                    symbol=self.symbol,
+                    qty=self.qty,
+                    avg_entry=self.entry_price,
+                    opened_at=self.entry_time,
+                ),
+            )
+
+        return PortfolioState(
+            equity=self.equity(mark),
+            daily_realized_pnl=daily,
+            weekly_realized_pnl=weekly,
+            positions=positions,
+        )
+
     def mark(self, candle: Candle) -> None:
         self.curve.append(
             EquityPoint(
@@ -258,6 +307,34 @@ def _validate(candles: Sequence[Candle]) -> None:
             raise ValueError("candles must be strictly increasing by open_time")
 
 
+def _build_gate(cfg: BacktestConfig, symbol: str) -> RiskGate | None:
+    """The gate a gated run uses; ``None`` keeps the ungated (historic) behaviour."""
+    if not cfg.risk_gate_enabled:
+        return None
+    limits = cfg.risk_limits or RiskLimit(allowed_symbols=frozenset({symbol}))
+    return RiskGate(limits=limits)
+
+
+def _gate_refusal(
+    gate: RiskGate | None, intent: OrderIntent, sim: _Simulator, candle: Candle
+) -> tuple[str, ...] | None:
+    """Ask the real gate about ``intent``; return reasons when it says no."""
+    if gate is None:
+        return None
+
+    mark = candle.close
+    equity = sim.equity(mark)
+    if equity <= 0:
+        return ("equity_depleted",)
+
+    context = MarketContext(
+        quotes=(MarketQuote(symbol=candle.symbol, price=mark, as_of=candle.close_time),),
+        now=candle.close_time,
+    )
+    decision = gate.evaluate(intent, sim.portfolio_state(context.now, mark), context)
+    return None if decision.approved else decision.reasons
+
+
 def run(
     strategy: StrategyBase,
     data: Sequence[Candle],
@@ -272,8 +349,10 @@ def run(
     _validate(candles)
     cfg = config or BacktestConfig()
 
+    gate = _build_gate(cfg, candles[0].symbol)
     sim = _Simulator(cfg, strategy.strategy_id, candles[0].symbol, candles[0].timeframe)
     pending: tuple[OrderIntent, int] | None = None
+    rejected: list[RejectedIntent] = []
 
     for index, candle in enumerate(candles):
         sim.accrue_funding(candle)
@@ -287,7 +366,18 @@ def run(
         if pending is None:
             intent = strategy.on_candle(candle, candles[: index + 1])
             if intent is not None:
-                pending = (intent, index + 1 + cfg.latency_bars)
+                refusal = _gate_refusal(gate, intent, sim, candle)
+                if refusal is None:
+                    pending = (intent, index + 1 + cfg.latency_bars)
+                else:
+                    rejected.append(
+                        RejectedIntent(
+                            at=candle.close_time,
+                            side=intent.side,
+                            qty=intent.qty,
+                            reasons=refusal,
+                        )
+                    )
 
         sim.mark(candle)
 
@@ -320,6 +410,7 @@ def run(
         timeframe=candles[0].timeframe,
         config=cfg,
         trades=tuple(sim.trades),
+        rejected_intents=tuple(rejected),
         equity_curve=tuple(sim.curve),
         metrics=metrics,
         started_at=candles[0].open_time,

@@ -13,6 +13,7 @@ writing a new ADR that references the old one — not editing history.
 | [0006](0006-paper-first-and-a-live-broker-stub.md) | Paper first, live broker is a stub, no withdrawal path |
 | [0007](0007-observability-json-logs-and-prometheus.md) | JSON logs with redaction, Prometheus metrics, alerting stub |
 | [0008](0008-config-layering-and-secrets.md) | Layered config, strict validation, environment-only secrets |
+| [0009](0009-protective-exits-through-the-gate.md) | Protective exits go through the gate, with a risk-reducing exemption |
 
 ## Format
 

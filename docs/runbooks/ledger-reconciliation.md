@@ -4,9 +4,10 @@
 a restore happened, or you suspect the in-process ledger and the tables disagree.
 
 The ledger is the source of truth **while a process runs**; the tables are the durable
-record. Restoring ledger state from the database is not implemented yet, so after a
-restart the ledger starts from `risk.initial_equity` with no positions — that is the
-most common source of a "mismatch".
+record. `position_monitor` reloads open positions and their newest stop/target from
+the tables at startup, but the API does not restore anything and realized PnL history
+is never reconstructed — so after a restart `/positions` and the loss windows can
+legitimately differ from the tables. That is the most common source of a "mismatch".
 
 ## 1. Snapshot both sides
 

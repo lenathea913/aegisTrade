@@ -17,7 +17,13 @@ from aegis_core.types import (
 )
 from aegis_metrics import PerformanceMetrics
 
-__all__ = ["BacktestResult", "BacktestTrade", "EquityPoint", "ExitReason"]
+__all__ = [
+    "BacktestResult",
+    "BacktestTrade",
+    "EquityPoint",
+    "ExitReason",
+    "RejectedIntent",
+]
 
 
 class ExitReason(StrEnum):
@@ -62,6 +68,19 @@ class EquityPoint(StrictModel):
     position_qty: FiniteDecimal
 
 
+class RejectedIntent(StrictModel):
+    """An entry intent the risk gate refused during a gated backtest.
+
+    Recorded instead of being silently dropped: the point of gating a backtest is to
+    see how often the live limits would have stopped the strategy it is measuring.
+    """
+
+    at: UtcDatetime
+    side: Side
+    qty: PositiveDecimal
+    reasons: tuple[NonEmptyStr, ...]
+
+
 class BacktestResult(StrictModel):
     """Everything a run produced, including the assumptions it used."""
 
@@ -70,6 +89,7 @@ class BacktestResult(StrictModel):
     timeframe: Timeframe
     config: BacktestConfig
     trades: tuple[BacktestTrade, ...] = ()
+    rejected_intents: tuple[RejectedIntent, ...] = ()
     equity_curve: tuple[EquityPoint, ...] = ()
     metrics: PerformanceMetrics
     started_at: UtcDatetime | None = None
@@ -78,6 +98,15 @@ class BacktestResult(StrictModel):
     @property
     def total_trades(self) -> int:
         return len(self.trades)
+
+    @property
+    def rejected_count(self) -> int:
+        return len(self.rejected_intents)
+
+    @property
+    def total_intents(self) -> int:
+        """Entry intents the strategy produced (filled trades plus gate rejections)."""
+        return len(self.trades) + len(self.rejected_intents)
 
     @property
     def final_equity(self) -> Decimal:

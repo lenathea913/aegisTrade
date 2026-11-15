@@ -43,15 +43,23 @@ def make_candle(hour: int = 0, *, close: str = "100") -> Candle:
 
 
 class _Result:
-    def __init__(self, rowcount: int) -> None:
-        self.rowcount = rowcount
+    """Cursor stand-in: the store counts rows returned by ``RETURNING``."""
+
+    def __init__(self, returned: int) -> None:
+        self.returned = returned
+        # The real driver reports -1 for these multi-row inserts; the store must not
+        # trust it. Keeping it here makes that regression impossible to reintroduce.
+        self.rowcount = -1
+
+    def all(self) -> list[tuple[int]]:
+        return [(index,) for index in range(self.returned)]
 
 
 class RecordingSession:
-    def __init__(self, rowcount: int = 1) -> None:
+    def __init__(self, returned: int = 1) -> None:
         self.statements: list[Any] = []
         self.savepoints = 0
-        self.rowcount = rowcount
+        self.returned = returned
 
     def begin_nested(self) -> contextlib.AbstractContextManager[None]:
         self.savepoints += 1
@@ -59,7 +67,7 @@ class RecordingSession:
 
     def execute(self, statement: Any) -> _Result:
         self.statements.append(statement)
-        return _Result(self.rowcount)
+        return _Result(self.returned)
 
 
 def test_rows_carry_exchange_source_and_domain_values() -> None:
@@ -87,18 +95,19 @@ def test_upsert_uses_the_natural_key_and_do_nothing() -> None:
     assert "ON CONFLICT (symbol, timeframe, open_time) DO NOTHING" in sql
 
 
-def test_upsert_returns_the_inserted_count() -> None:
-    session = RecordingSession(rowcount=2)
+def test_upsert_counts_rows_returned_by_the_statement() -> None:
+    session = RecordingSession(returned=2)
     store = CandleStore(cast(Session, session))
 
     inserted = store.upsert([make_candle(0), make_candle(1)], exchange="binance", source="csv")
 
     assert inserted == 2
     assert len(session.statements) == 1
+    assert "RETURNING" in str(session.statements[0].compile(dialect=postgres_dialect()))
 
 
 def test_upsert_runs_inside_a_savepoint() -> None:
-    session = RecordingSession(rowcount=1)
+    session = RecordingSession(returned=1)
 
     CandleStore(cast(Session, session)).upsert([make_candle()], exchange="binance", source="csv")
 
@@ -113,17 +122,12 @@ def test_empty_batch_skips_the_database() -> None:
     assert session.statements == []
 
 
-def test_unknown_rowcount_is_treated_as_zero() -> None:
-    class NoRowcount:
-        rowcount = None
+def test_conflicting_batch_inserts_nothing_and_counts_zero() -> None:
+    """Every row already exists: ``RETURNING`` is empty, so the count is zero."""
+    session = RecordingSession(returned=0)
 
-    class NullSession:
-        def begin_nested(self) -> contextlib.AbstractContextManager[None]:
-            return contextlib.nullcontext()
+    inserted = CandleStore(cast(Session, session)).upsert(
+        [make_candle()], exchange="binance", source="csv"
+    )
 
-        def execute(self, statement: Any) -> NoRowcount:
-            return NoRowcount()
-
-    store = CandleStore(cast(Session, NullSession()))
-
-    assert store.upsert([make_candle()], exchange="binance", source="csv") == 0
+    assert inserted == 0

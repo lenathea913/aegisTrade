@@ -21,15 +21,18 @@ from aegis_core.errors import (
     UnapprovedOrderError,
 )
 from aegis_core.ids import new_id
+from aegis_core.motivation import TRADER_MOTIVATION_QUOTE, get_random_motivation
 from aegis_core.order import ApprovedOrder, Order, OrderIntent
 from aegis_core.position import Position
 from aegis_core.risk import RiskDecision, RiskLimit
+from aegis_core.signal import Signal, SignalDirection, SignalStatus
 from aegis_core.state import MarketContext, MarketQuote, PortfolioState
 from aegis_core.trade import Trade
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "TRADER_MOTIVATION_QUOTE",
     "AegisError",
     "ApprovedOrder",
     "Candle",
@@ -46,11 +49,15 @@ __all__ = [
     "RiskDecision",
     "RiskLimit",
     "Side",
+    "Signal",
+    "SignalDirection",
+    "SignalStatus",
     "StrictModel",
     "Timeframe",
     "Trade",
     "UnapprovedOrderError",
     "__version__",
+    "get_random_motivation",
     "new_id",
     "to_utc",
     "utc_now",

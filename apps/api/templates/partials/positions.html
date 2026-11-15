@@ -1,0 +1,41 @@
+{% if positions.count == 0 %}
+<p class="rounded border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-400">
+  No open positions. A flat book is a valid state, not a missing feature.
+</p>
+{% else %}
+<div class="overflow-x-auto rounded border border-slate-800">
+  <table class="w-full text-left text-sm">
+    <thead class="bg-slate-900/80 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="px-4 py-2">Symbol</th>
+        <th class="px-4 py-2">Side</th>
+        <th class="px-4 py-2">Qty</th>
+        <th class="px-4 py-2">Avg entry</th>
+        <th class="px-4 py-2">Notional</th>
+        <th class="px-4 py-2">Unrealized</th>
+        <th class="px-4 py-2">Realized</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for position in positions.positions %}
+      <tr class="bg-slate-950/40">
+        <td class="px-4 py-2 font-medium">{{ position.symbol }}</td>
+        <td class="px-4 py-2">
+          <span class="rounded px-2 py-0.5 text-xs {{ 'bg-emerald-500/10 text-emerald-300' if position.side == 'BUY' else 'bg-rose-500/10 text-rose-300' }}">
+            {{ position.side }}
+          </span>
+        </td>
+        <td class="px-4 py-2 font-mono">{{ position.qty }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.avg_entry }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.notional }}</td>
+        <td class="px-4 py-2 font-mono {{ 'text-emerald-300' if position.unrealized_pnl.startswith('-') == false else 'text-rose-300' }}">
+          {{ position.unrealized_pnl }}
+        </td>
+        <td class="px-4 py-2 font-mono">{{ position.realized_pnl }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="mt-2 text-xs text-slate-500">{{ positions.count }} position(s), marked by the ledger.</p>
+{% endif %}

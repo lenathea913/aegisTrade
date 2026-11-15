@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}AegisTrade{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+    <header class="border-b border-slate-800 bg-slate-900/70">
+      <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-3">
+        <span class="text-lg font-semibold tracking-tight">AegisTrade</span>
+        <nav class="flex gap-1 text-sm">
+          {% set links = [("/", "Overview"), ("/positions", "Positions"), ("/journal", "Journal"), ("/signals", "Signals")] %}
+          {% for href, label in links %}
+            <a
+              href="{{ href }}"
+              class="rounded px-3 py-1.5 text-slate-300 hover:bg-slate-800 hover:text-white"
+              >{{ label }}</a
+            >
+          {% endfor %}
+        </nav>
+        <span class="ml-auto rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">
+          {{ health.environment if health else "—" }} · paper
+        </span>
+      </div>
+    </header>
+
+    <main class="mx-auto max-w-6xl px-4 py-6">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="mx-auto max-w-6xl px-4 pb-10 pt-2 text-xs text-slate-500">
+      <p>Personal research tool. Not financial advice; no returns are promised.</p>
+      <p class="mt-1 text-slate-400">
+        <span hx-get="/partials/motivation" hx-trigger="load, every 60s" hx-swap="innerHTML"
+          >{{ motivation if motivation else "" }}</span
+        >
+      </p>
+    </footer>
+  </body>
+</html>

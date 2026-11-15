@@ -1,0 +1,74 @@
+{% set tone = "bg-emerald-500/10 text-emerald-300" if selected.status == "RISK_OK" else ("bg-rose-500/10 text-rose-300" if selected.status == "BLOCKED_BY_RISK" else "bg-slate-700/40 text-slate-300") %}
+<div class="flex items-center gap-2">
+  <h2 class="text-lg font-semibold">{{ selected.symbol }} {{ selected.direction }}</h2>
+  <span class="rounded px-2 py-0.5 text-xs {{ tone }}">{{ selected.status }}</span>
+  <span class="ml-auto font-mono text-xs text-slate-500">{{ selected.signal_id }}</span>
+</div>
+
+<dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Entry ref</dt><dd class="font-mono">{{ selected.entry_ref }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Stop</dt><dd class="font-mono">{{ selected.stop_loss }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Take profit</dt><dd class="font-mono">{{ selected.take_profit }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Risk / reward</dt><dd class="font-mono">{{ selected.risk_reward }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Strategy</dt><dd>{{ selected.strategy_id }} v{{ selected.strategy_version }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Expires</dt><dd class="font-mono text-xs">{{ selected.expires_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</dd></div>
+</dl>
+
+<div class="mt-4 rounded border border-slate-800 bg-slate-950/60 p-3">
+  <h3 class="text-xs uppercase tracking-wide text-slate-500">Risk preview (dry run)</h3>
+  {% if preview %}
+    <p class="mt-1 text-sm {{ 'text-emerald-300' if preview.approved else 'text-rose-300' }}">
+      {{ "would be approved" if preview.approved else "would be rejected" }}
+      {% if preview.approved %}· max risk {{ preview.max_risk_amount }}{% endif %}
+    </p>
+    <ul class="mt-2 space-y-1 text-xs text-slate-400">
+      {% for reason in preview.reasons %}<li class="font-mono">{{ reason }}</li>{% endfor %}
+    </ul>
+  {% else %}
+    <p class="mt-1 text-sm text-slate-400">unavailable</p>
+  {% endif %}
+</div>
+
+<div class="mt-4 flex flex-wrap gap-2">
+  <button
+    class="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+    hx-post="/ui/signals/{{ selected.signal_id }}/convert"
+    hx-target="#signal-detail"
+    hx-swap="innerHTML"
+    {% if not selected.is_actionable %}disabled{% endif %}
+  >
+    Convert to draft intent
+  </button>
+  <button
+    class="rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-500"
+    hx-post="/ui/signals/{{ selected.signal_id }}/ignore"
+    hx-target="#signal-detail"
+    hx-swap="innerHTML"
+    {% if selected.status in ["CONVERTED", "IGNORED"] %}disabled{% endif %}
+  >
+    Ignore
+  </button>
+</div>
+
+{% if message %}
+<p class="mt-3 rounded border border-rose-500/30 bg-rose-500/10 p-2 text-sm text-rose-200">{{ message }}</p>
+{% endif %}
+
+{% if conversion %}
+<div class="mt-4 rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
+  <h3 class="text-xs uppercase tracking-wide text-emerald-300">Draft intent — not executed</h3>
+  <p class="mt-1 font-mono text-xs text-slate-300">
+    {{ conversion.intent.side }} {{ conversion.intent.qty }} {{ conversion.intent.symbol }}
+    @ {{ conversion.intent.price }} · stop {{ conversion.intent.stop_loss }} · target
+    {{ conversion.intent.take_profit }}
+  </p>
+  <p class="mt-2 text-xs text-slate-400">
+    max risk {{ conversion.decision.max_risk_amount }} · checks:
+    {{ conversion.decision.reasons | join(", ") }}
+  </p>
+  <p class="mt-2 text-xs text-slate-500">
+    Execution is not wired to this screen. A draft becomes an order only through
+    TradingPipeline with a separate approval.
+  </p>
+</div>
+{% endif %}

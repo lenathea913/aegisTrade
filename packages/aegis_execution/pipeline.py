@@ -23,6 +23,7 @@ from aegis_core import (
     OrderIntent,
     RiskDecision,
     Trade,
+    get_random_motivation,
 )
 from aegis_execution.errors import ExecutionError
 from aegis_execution.gateway import ExecutionGateway, ExecutionResult
@@ -34,6 +35,7 @@ from aegis_ledger import (
     PortfolioLedger,
     PositionProtection,
 )
+from aegis_observability import get_logger
 from aegis_risk import RiskGate
 
 __all__ = ["PipelineResult", "TradingPipeline"]
@@ -83,6 +85,7 @@ class TradingPipeline:
         self._gateway = gateway
         self._ledger = ledger
         self._writer = writer
+        self._logger = get_logger("aegis.execution")
 
     @property
     def ledger(self) -> PortfolioLedger:
@@ -94,6 +97,16 @@ class TradingPipeline:
         decision = self._gate.evaluate(intent, state, market)
 
         if not decision.approved:
+            # A rejection is the gate doing its job. Log it at INFO with a next step,
+            # so an operator reading the tail sees advice and not only a code.
+            self._logger.info(
+                "order_rejected",
+                symbol=intent.symbol,
+                strategy_id=intent.strategy_id,
+                side=intent.side.value,
+                reason_count=len(decision.reasons),
+                motivation=get_random_motivation(),
+            )
             event = AuditEvent(
                 event_type=EventType.RISK_REJECTED,
                 entity_type="order_intent",

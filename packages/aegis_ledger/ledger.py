@@ -22,13 +22,31 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any, Protocol
 
 from aegis_core import PortfolioState, Position, Side, Trade, utc_now
 from aegis_ledger.errors import LedgerError
 
-__all__ = ["LedgerUpdate", "PortfolioLedger", "PositionProtection", "RealizedEvent"]
+__all__ = [
+    "LedgerUpdate",
+    "PortfolioLedger",
+    "PositionProtection",
+    "RealizedEvent",
+    "ReconstructionSession",
+    "ReconstructionSummary",
+]
 
 _ZERO = Decimal("0")
+
+
+class ReconstructionSession(Protocol):
+    """The slice of ``Session`` reconstruction needs.
+
+    Narrowing it to ``execute`` lets the replay be tested without a database while
+    a real ``Session`` still satisfies it structurally.
+    """
+
+    def execute(self, statement: Any) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -86,6 +104,19 @@ class LedgerUpdate:
     position: Position
     realized_delta: Decimal
     equity: Decimal
+
+
+@dataclass(frozen=True)
+class ReconstructionSummary:
+    """What a startup reconstruction found in the durable record."""
+
+    trades_replayed: int
+    positions_loaded: int
+    open_positions: int
+    daily_realized_pnl: Decimal
+    weekly_realized_pnl: Decimal
+    equity: Decimal
+    replayed_at: datetime
 
 
 @dataclass
@@ -220,6 +251,101 @@ class PortfolioLedger:
             weekly_realized_pnl=self.realized_between(week_start, moment),
             positions=self._marked_positions(),
         )
+
+    def reconstruct_from_db(
+        self,
+        session: ReconstructionSession,
+        *,
+        strict: bool = True,
+        now: datetime | None = None,
+    ) -> ReconstructionSummary:
+        """Rebuild positions, marks and realized PnL from ``trading.trades``.
+
+        Trades are the immutable record, so the ledger replays them **in order** with
+        the same accounting it uses live (``Position.apply_fill``, fees and funding
+        booked at the realization moment). That yields the day/week windows and the
+        final positions without trusting a mutable row.
+
+        ``trading.positions`` is then compared against the replay. With ``strict`` a
+        disagreement raises ``LedgerError``: the tables are the durable record, and a
+        silent divergence would make `/positions` a nice-looking lie.
+        """
+        from sqlalchemy import select
+
+        from aegis_db import PositionRecord, TradeRecord
+        from aegis_ledger.records import position_from_row, trade_from_row
+
+        replayed = [
+            trade_from_row(row)
+            for row in session.execute(
+                select(TradeRecord).order_by(TradeRecord.filled_at, TradeRecord.trade_id)
+            ).scalars()
+        ]
+        stored = [
+            position_from_row(row) for row in session.execute(select(PositionRecord)).scalars()
+        ]
+
+        self._positions.clear()
+        self._marks.clear()
+        self._realized.clear()
+        self._protections.clear()
+
+        for trade in replayed:
+            current = self.position(trade.symbol)
+            updated = current.apply_fill(trade.signed_qty, trade.price)
+            realized_delta = (
+                (updated.realized_pnl - current.realized_pnl) - trade.fee + trade.funding
+            )
+            self._positions[updated.symbol] = updated
+            self._marks[updated.symbol] = trade.price
+            self._realized.append(
+                RealizedEvent(
+                    amount=realized_delta,
+                    at=trade.filled_at,
+                    trade_id=trade.trade_id,
+                    symbol=updated.symbol,
+                )
+            )
+
+        mismatches = self._compare_positions(stored)
+        if mismatches and strict:
+            raise LedgerError(
+                "reconstructed ledger disagrees with trading.positions: " + "; ".join(mismatches)
+            )
+
+        moment = now if now is not None else self._clock()
+        state = self.snapshot(now=moment)
+        return ReconstructionSummary(
+            trades_replayed=len(replayed),
+            positions_loaded=len(stored),
+            open_positions=len(state.open_positions),
+            daily_realized_pnl=state.daily_realized_pnl,
+            weekly_realized_pnl=state.weekly_realized_pnl,
+            equity=state.equity,
+            replayed_at=moment,
+        )
+
+    def _compare_positions(self, stored: Sequence[Position]) -> list[str]:
+        """Differences between the replay and the positions table (empty = consistent)."""
+        differences: list[str] = []
+        by_symbol = {position.symbol: position for position in stored}
+        for symbol in sorted(set(by_symbol) | set(self._positions)):
+            row = by_symbol.get(symbol)
+            replayed = self._positions.get(symbol)
+            if row is None:
+                differences.append(f"{symbol}: missing position row")
+                continue
+            if replayed is None:
+                if not row.is_flat:
+                    differences.append(f"{symbol}: row holds {row.qty} with no trades")
+                continue
+            if row.qty != replayed.qty:
+                differences.append(f"{symbol}: qty row={row.qty} replay={replayed.qty}")
+            if row.realized_pnl != replayed.realized_pnl:
+                differences.append(
+                    f"{symbol}: realized row={row.realized_pnl} replay={replayed.realized_pnl}"
+                )
+        return differences
 
     def restore(
         self, positions: Sequence[Position], realized: Sequence[RealizedEvent] = ()

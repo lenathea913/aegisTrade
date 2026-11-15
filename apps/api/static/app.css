@@ -1,0 +1,19 @@
+/* AegisTrade dashboard: only what Tailwind's CDN cannot express. */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* HTMX requests get a subtle indicator instead of a full-page spinner. */
+.htmx-request {
+  opacity: 0.6;
+  transition: opacity 120ms ease-in-out;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

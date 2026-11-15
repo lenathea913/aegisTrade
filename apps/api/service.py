@@ -13,6 +13,7 @@ own and never writes.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
@@ -35,6 +36,10 @@ __all__ = ["ApiService"]
 
 _HUNDRED = Decimal("100")
 DEFAULT_JOURNAL_LIMIT = 50
+# The dashboard polls every 5 s; with the database down, each ping costs the
+# connect timeout. Cache the answer so a dead database slows one poll a minute,
+# not every poll.
+HEALTH_CACHE_SECONDS = 30.0
 
 
 class ApiService:
@@ -52,12 +57,25 @@ class ApiService:
         self._repository = repository
         self._ledger = ledger
         self._clock = clock
+        self._health_cache: tuple[float, HealthResponse] | None = None
+
+    @property
+    def ledger(self) -> PortfolioLedger:
+        """The book this service reports (restored from the database at startup)."""
+        return self._ledger
 
     # --------------------------------------------------------------- health
 
     def health(self) -> HealthResponse:
+        """Process, database and kill-switch status, probed at most every 30 s."""
+        monotonic_now = time.monotonic()
+        if (
+            self._health_cache is not None
+            and monotonic_now - self._health_cache[0] < HEALTH_CACHE_SECONDS
+        ):
+            return self._health_cache[1]
         database_ok = self._repository.ping()
-        return HealthResponse(
+        response = HealthResponse(
             status="ok" if database_ok else "degraded",
             version=__version__,
             environment=self._settings.environment.value,
@@ -66,6 +84,8 @@ class ApiService:
             kill_switch=self._settings.risk.kill_switch,
             time=self._clock(),
         )
+        self._health_cache = (monotonic_now, response)
+        return response
 
     # ------------------------------------------------------------ positions
 

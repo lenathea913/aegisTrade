@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from aegis_config import load_settings
 from aegis_core import Trade
@@ -34,10 +35,17 @@ class EmptyRepository:
         return []
 
 
+class UnreachableFactory:
+    """Startup reconstruction must degrade, not crash, without a database."""
+
+    def __call__(self) -> Any:
+        raise SQLAlchemyError("database is unreachable")
+
+
 def test_default_wiring_builds_a_service_and_disposes_the_engine(monkeypatch: Any) -> None:
     engine = FakeEngine()
     monkeypatch.setattr(app_module, "create_engine_from_settings", lambda database: engine)
-    monkeypatch.setattr(app_module, "create_session_factory", lambda eng: object())
+    monkeypatch.setattr(app_module, "create_session_factory", lambda eng: UnreachableFactory())
     monkeypatch.setattr(app_module, "SqlTradingRepository", lambda factory: EmptyRepository())
     settings = load_settings("paper")
 

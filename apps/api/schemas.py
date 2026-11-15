@@ -13,14 +13,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from aegis_core import OrderIntent, Signal
+
 __all__ = [
+    "ConversionResponse",
     "HealthResponse",
+    "IntentResponse",
     "JournalEntryResponse",
     "JournalResponse",
     "LimitsResponse",
+    "MotivationResponse",
     "PositionResponse",
     "PositionsResponse",
     "RiskBudgetResponse",
+    "SignalListResponse",
+    "SignalResponse",
 ]
 
 
@@ -98,3 +105,97 @@ class JournalResponse(BaseModel):
     count: int
     limit: int
     entries: list[JournalEntryResponse]
+
+
+class MotivationResponse(BaseModel):
+    """One process reminder, for the dashboard footer and the API."""
+
+    quote: str
+
+
+class SignalResponse(BaseModel):
+    """A trading idea and what the risk engine thinks of it so far."""
+
+    signal_id: str
+    symbol: str
+    timeframe: str
+    strategy_id: str
+    strategy_version: str
+    direction: str
+    entry_ref: str
+    stop_loss: str
+    take_profit: str
+    risk_reward: str
+    reason_codes: list[str]
+    market_context: dict[str, Any]
+    status: str
+    status_reasons: list[str]
+    created_at: datetime
+    expires_at: datetime
+
+    @classmethod
+    def from_domain(cls, signal: Signal) -> SignalResponse:
+        """Map the domain object, keeping money as strings."""
+        return cls(
+            signal_id=signal.signal_id,
+            symbol=signal.symbol,
+            timeframe=signal.timeframe.value,
+            strategy_id=signal.strategy_id,
+            strategy_version=signal.strategy_version,
+            direction=signal.direction.value,
+            entry_ref=str(signal.entry_ref),
+            stop_loss=str(signal.stop_loss),
+            take_profit=str(signal.take_profit),
+            risk_reward=str(signal.risk_reward),
+            reason_codes=list(signal.reason_codes),
+            market_context=dict(signal.market_context),
+            status=signal.status.value,
+            status_reasons=list(signal.status_reasons),
+            created_at=signal.created_at,
+            expires_at=signal.expires_at,
+        )
+
+
+class SignalListResponse(BaseModel):
+    count: int
+    signals: list[SignalResponse]
+
+
+class IntentResponse(BaseModel):
+    """A **draft** order intent: nothing has been ordered."""
+
+    symbol: str
+    side: str
+    order_type: str
+    qty: str
+    price: str | None
+    stop_loss: str
+    take_profit: str | None
+    strategy_id: str
+    reason: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, intent: OrderIntent) -> IntentResponse:
+        return cls(
+            symbol=intent.symbol,
+            side=intent.side.value,
+            order_type=intent.order_type.value,
+            qty=str(intent.qty),
+            price=None if intent.price is None else str(intent.price),
+            stop_loss=str(intent.stop_loss),
+            take_profit=None if intent.take_profit is None else str(intent.take_profit),
+            strategy_id=intent.strategy_id,
+            reason=intent.reason,
+            created_at=intent.created_at,
+        )
+
+
+class ConversionResponse(BaseModel):
+    """Result of converting a signal: a draft intent plus the gate's checks."""
+
+    signal: SignalResponse
+    intent: IntentResponse
+    status: Literal["DRAFT"] = "DRAFT"
+    max_risk_amount: str
+    checks: list[str]

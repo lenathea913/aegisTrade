@@ -1,0 +1,33 @@
+{% if signals | length == 0 %}
+<p class="p-4 text-sm text-slate-400">No signals.</p>
+{% else %}
+<ul class="divide-y divide-slate-800">
+  {% for signal in signals %}
+  {% set tone = "bg-emerald-500/10 text-emerald-300" if signal.status == "RISK_OK" else ("bg-rose-500/10 text-rose-300" if signal.status == "BLOCKED_BY_RISK" else "bg-slate-700/40 text-slate-300") %}
+  <li>
+    <button
+      class="w-full px-4 py-3 text-left hover:bg-slate-800/60"
+      hx-get="/partials/signals/{{ signal.signal_id }}"
+      hx-target="#signal-detail"
+      hx-swap="innerHTML"
+    >
+      <div class="flex items-center gap-2">
+        <span class="font-medium">{{ signal.symbol }}</span>
+        <span class="text-xs text-slate-500">{{ signal.timeframe }}</span>
+        <span class="rounded px-2 py-0.5 text-xs {{ 'bg-emerald-500/10 text-emerald-300' if signal.direction == 'LONG' else 'bg-rose-500/10 text-rose-300' }}">
+          {{ signal.direction }}
+        </span>
+        <span class="ml-auto rounded px-2 py-0.5 text-xs {{ tone }}">{{ signal.status }}</span>
+      </div>
+      <div class="mt-1 font-mono text-xs text-slate-400">
+        entry {{ signal.entry_ref }} · stop {{ signal.stop_loss }} · target {{ signal.take_profit }} ·
+        R:R {{ signal.risk_reward }}
+      </div>
+      <div class="mt-1 text-xs text-slate-500">
+        {{ signal.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC
+      </div>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

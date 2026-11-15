@@ -10,7 +10,7 @@ import uuid
 from typing import Final
 
 _PREFIXES: Final[frozenset[str]] = frozenset(
-    {"ord", "trd", "pos", "int", "appr", "risk", "evt", "run"}
+    {"ord", "trd", "pos", "int", "appr", "risk", "evt", "run", "sig"}
 )
 
 

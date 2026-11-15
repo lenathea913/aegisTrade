@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Signals · AegisTrade{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center gap-3">
+  <h1 class="text-xl font-semibold">Signals</h1>
+  <p class="text-sm text-slate-400">
+    A signal is an idea. Converting one produces a <span class="text-slate-200">draft intent</span>;
+    the risk engine runs again and nothing is executed here.
+  </p>
+  <button
+    class="ml-auto rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800"
+    hx-post="/ui/signals/generate"
+    hx-target="#signal-list"
+    hx-swap="innerHTML"
+  >
+    Scan candles
+  </button>
+</div>
+
+<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+  <section class="rounded border border-slate-800 bg-slate-900/40">
+    <h2 class="border-b border-slate-800 px-4 py-2 text-xs uppercase tracking-wide text-slate-500">
+      Latest ideas
+    </h2>
+    <div id="signal-list" hx-get="/partials/signals" hx-trigger="every 5s" hx-swap="innerHTML">
+      {% include "partials/signals.html" %}
+    </div>
+  </section>
+
+  <section id="signal-detail" class="rounded border border-slate-800 bg-slate-900/40 p-4">
+    {% if selected %}
+      {% include "partials/signal_detail.html" %}
+    {% else %}
+      <p class="text-sm text-slate-400">
+        No signals yet. Press “Scan candles” — generation reads stored candles and asks
+        the risk engine for a preview.
+      </p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

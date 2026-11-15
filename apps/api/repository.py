@@ -17,9 +17,9 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from aegis_core import Side, Trade
+from aegis_core import Trade
 from aegis_db import AuditLog, TradeRecord, session_scope
-from aegis_ledger import AuditEvent, EventType
+from aegis_ledger import AuditEvent, EventType, trade_from_row
 
 __all__ = [
     "ApiRepository",
@@ -27,23 +27,6 @@ __all__ = [
     "audit_event_from_row",
     "trade_from_row",
 ]
-
-
-def trade_from_row(row: TradeRecord) -> Trade:
-    """Map a ``trading.trades`` row back into the domain."""
-    return Trade(
-        trade_id=row.trade_id,
-        order_id=row.order_id,
-        symbol=row.symbol,
-        side=Side(row.side),
-        qty=row.qty,
-        price=row.price,
-        fee=row.fee,
-        funding=row.funding,
-        filled_at=row.filled_at,
-        strategy_id=row.strategy_id,
-        r_multiple=row.r_multiple,
-    )
 
 
 def audit_event_from_row(row: AuditLog) -> AuditEvent:

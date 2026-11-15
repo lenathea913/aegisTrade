@@ -26,6 +26,11 @@ class StrategyBase(ABC):
         """Stable identifier written to intents, trades and the audit trail."""
 
     @property
+    def strategy_version(self) -> str:
+        """Version of the rules; recorded on signals and trades."""
+        return "1"
+
+    @property
     @abstractmethod
     def warmup_bars(self) -> int:
         """Bars needed before ``on_candle`` can produce a signal."""

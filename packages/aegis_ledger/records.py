@@ -6,12 +6,48 @@ gateway/ledger never need to know about SQLAlchemy columns.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
-from aegis_core import ApprovedOrder, Order, Position, Trade
+from aegis_core import ApprovedOrder, Order, Position, Side, Trade
 from aegis_ledger.audit import AuditEvent
 
-__all__ = ["audit_row", "order_row", "position_row", "trade_row"]
+__all__ = [
+    "PositionRow",
+    "TradeRow",
+    "audit_row",
+    "order_row",
+    "position_from_row",
+    "position_row",
+    "trade_from_row",
+    "trade_row",
+]
+
+
+class TradeRow(Protocol):
+    """The ``trading.trades`` columns this layer reads back."""
+
+    trade_id: str
+    order_id: str
+    symbol: str
+    side: str
+    qty: Any
+    price: Any
+    fee: Any
+    funding: Any
+    filled_at: Any
+    strategy_id: str
+    r_multiple: Any
+
+
+class PositionRow(Protocol):
+    """The ``trading.positions`` columns this layer reads back."""
+
+    symbol: str
+    qty: Any
+    avg_entry: Any
+    unrealized_pnl: Any
+    realized_pnl: Any
+    opened_at: Any
 
 
 def order_row(order: Order, approved: ApprovedOrder) -> dict[str, Any]:
@@ -66,6 +102,35 @@ def position_row(position: Position) -> dict[str, Any]:
         "realized_pnl": position.realized_pnl,
         "opened_at": position.opened_at,
     }
+
+
+def trade_from_row(row: TradeRow) -> Trade:
+    """Map a ``trading.trades`` row back into the domain."""
+    return Trade(
+        trade_id=row.trade_id,
+        order_id=row.order_id,
+        symbol=row.symbol,
+        side=Side(row.side),
+        qty=row.qty,
+        price=row.price,
+        fee=row.fee,
+        funding=row.funding,
+        filled_at=row.filled_at,
+        strategy_id=row.strategy_id,
+        r_multiple=row.r_multiple,
+    )
+
+
+def position_from_row(row: PositionRow) -> Position:
+    """Map a ``trading.positions`` row back into the domain."""
+    return Position(
+        symbol=row.symbol,
+        qty=row.qty,
+        avg_entry=row.avg_entry,
+        unrealized_pnl=row.unrealized_pnl,
+        realized_pnl=row.realized_pnl,
+        opened_at=row.opened_at,
+    )
 
 
 def audit_row(event: AuditEvent) -> dict[str, Any]:

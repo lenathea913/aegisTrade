@@ -102,6 +102,26 @@ def test_health_degrades_when_the_database_is_down() -> None:
     assert health.database == "unavailable"
 
 
+def test_health_is_cached_so_polling_does_not_repeat_the_probe() -> None:
+    repository = FakeRepository()
+    service = make_service(repository=repository)
+    probes = 0
+
+    original = repository.ping
+
+    def counting_ping() -> bool:
+        nonlocal probes
+        probes += 1
+        return original()
+
+    repository.ping = counting_ping  # type: ignore[method-assign]
+
+    assert service.health().status == "ok"
+    assert service.health().status == "ok"
+
+    assert probes == 1
+
+
 def test_health_surfaces_the_kill_switch() -> None:
     settings = load_settings("paper")
     halted = settings.model_copy(

@@ -8,16 +8,16 @@ It is deliberately *not* a profit bot, not a price-prediction system, and it mak
 reproducible, every order checked against explicit risk limits, and every state
 change explainable after the fact.
 
-> Status: **FASE 10 — verified against a real database**. Domain, schema, layered
-> config, the eight-rule `aegis_risk` gate, the research stack (now able to run with
-> the real gate), the idempotent `market_collector`, the audit-first
-> `aegis_execution` / `aegis_ledger` path, the `position_monitor` that enforces stops
-> through the gate, the read-only FastAPI surface, the composed
-> Postgres/Redis/Prometheus/Grafana stack, and the ADR + runbook set exist.
-> Schema, triggers, idempotency and the journal were exercised on PostgreSQL 16;
-> the Docker image and compose stack were not (no Docker on the build machine).
-> Remaining gaps (no live adapter, no scheduled entry runner) are listed in
-> `docs/architecture/overview.md`.
+> Status: **FASE 11 — dashboard, signals and restart-safe ledger**. On top of the
+> FASE 10 stack (risk gate, research, collector, audit/ledger, position monitor,
+> read-only API, compose stack) the ledger now *reconstructs itself from
+> `trading.trades` on startup*, signals are a first-class domain object with a risk
+> preview, and a server-rendered Jinja2/HTMX dashboard shows the same truth the API
+> reports. There is still no live adapter and no scheduled entry runner, and the
+> dashboard cannot execute anything: conversion stops at a `DRAFT` intent.
+> Schema, triggers, idempotency, the journal and ledger reconstruction were
+> exercised on PostgreSQL 16; the Docker image is built in CI, not on the build
+> machine (no Docker locally).
 
 ## Risk-first principles
 
@@ -229,8 +229,9 @@ uv run pytest tests/integration/test_end_to_end_order_flow.py -q
 
 ## API, logs and metrics
 
-The API is **read-only**: no route places an order. Execution stays behind
-`TradingPipeline` and is driven by the runner, not by HTTP.
+No route places an order. Execution stays behind `TradingPipeline` and is driven
+by the runner, not by HTTP; the signal endpoints can only produce a **`DRAFT`
+intent**, and conversion re-runs the risk engine (400 with the reasons if refused).
 
 | Endpoint | What it returns |
 | --- | --- |
@@ -239,6 +240,12 @@ The API is **read-only**: no route places an order. Execution stays behind
 | `GET /risk/budget` | equity, per-trade capacity, remaining daily/weekly loss budget, exposure and leverage vs limits |
 | `GET /journal?limit=50` | executed trades and audit events merged newest-first |
 | `GET /metrics` | Prometheus exposition (disable with `observability.metrics_enabled: false`) |
+| `GET /motivation` | one line from `TRADER_MOTIVATION_QUOTE` (behaviour, not a signal) |
+| `POST /api/signals/generate` | scan stored candles once, store the signals it finds |
+| `GET /api/signals`, `/api/signals/{id}` | signals with status, levels and risk preview |
+| `POST /api/signals/{id}/convert` | draft intent + fresh `RiskGate.evaluate`; `400` if refused |
+| `POST /api/signals/{id}/ignore` | retire a signal without converting it |
+| `GET /`, `/positions`, `/journal`, `/signals` | HTML dashboard when the client sends `Accept: text/html` |
 
 ```bash
 make dev     # uvicorn on http://localhost:8000, hot reload
@@ -251,6 +258,28 @@ A stopped PostgreSQL is reported as `status: "degraded"` with `database:
 `database.connect_timeout_seconds`. `/journal` answers `503` in that case, because
 the journal genuinely needs the database; `/positions` and `/risk/budget` keep
 working from the in-process ledger.
+
+`/positions` and `/journal` answer HTML to a browser and JSON to everything else,
+so the API contract survives the dashboard without a second set of paths.
+
+## Web dashboard
+
+`apps/api/templates/` holds Jinja2 templates (Tailwind via CDN, dark by default,
+HTMX for polling) and `apps/api/static/app.css` the few rules Tailwind cannot
+express. Overview, Positions and Signals poll every 5 seconds; converting a signal
+swaps only the detail panel. There is no Node build step and no React/Vue/Next.
+
+The dashboard is deliberately narrow: it shows health, budget, exposure, PnL,
+positions, journal and signals, and it can turn a signal into a **draft**. It
+cannot approve, execute or cancel anything.
+
+## Ledger reconstruction
+
+`PortfolioLedger` still computes everything in memory, but on startup the API calls
+`reconstruct_from_db(session)`: it replays `trading.trades` in fill order with the
+same accounting used live, then compares the result with `trading.positions`. A
+disagreement raises `LedgerError` (strict by default) rather than serving a
+plausible-looking lie. See `docs/adr/0010-ledger-reconstruction-signals-dashboard.md`.
 
 Logs are JSON by default (`observability.json_logs: false` for readable dev output)
 and are passed through a redaction processor that masks any key matching

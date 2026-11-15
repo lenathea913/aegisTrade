@@ -164,6 +164,8 @@ def test_api_startup_restores_the_ledger(factory: sessionmaker[Session]) -> None
         settings=settings,
         repository=SqlTradingRepository(factory),
         ledger=PortfolioLedger(initial_equity=settings.risk.initial_equity),
+        # The trades are from the reconstruction window, not from today.
+        clock=lambda: NOW + timedelta(hours=2),
     )
 
     class Logger:

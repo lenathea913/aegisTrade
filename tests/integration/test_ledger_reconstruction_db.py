@@ -18,8 +18,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from aegis_config import load_settings
-from aegis_core import Side, Trade
-from aegis_db import Base, create_session_factory
+from aegis_core import OrderStatus, OrderType, Side, Trade
+from aegis_db import Base, OrderRecord, create_session_factory
 from aegis_ledger import LedgerStore, PortfolioLedger
 from api.app import _restore_ledger
 from api.repository import SqlTradingRepository
@@ -51,6 +51,37 @@ def factory() -> Iterator[sessionmaker[Session]]:
         engine.dispose()
 
 
+def _persist(session: Session, ledger: PortfolioLedger, trade: Trade) -> None:
+    """Write the order, the trade and the resulting position, in FK order."""
+    session.add(
+        OrderRecord(
+            order_id=trade.order_id,
+            approval_id=f"appr_{trade.order_id}",
+            symbol=trade.symbol,
+            side=trade.side.value,
+            order_type=OrderType.MARKET.value,
+            qty=trade.qty,
+            price=trade.price,
+            stop_loss=trade.price,
+            take_profit=None,
+            status=OrderStatus.FILLED.value,
+            broker="paper",
+            filled_qty=trade.qty,
+            avg_fill_price=trade.price,
+            strategy_id=trade.strategy_id,
+            reason="ledger reconstruction integration test",
+            max_risk_amount=Decimal("1"),
+            risk_checks=[],
+            approved_at=trade.filled_at,
+        )
+    )
+    session.flush()
+    store = LedgerStore(session)
+    update = ledger.apply_trade(trade)
+    store.save_trade(trade)
+    store.save_position(update.position)
+
+
 def _write_round_trip(factory: sessionmaker[Session]) -> None:
     """Buy then sell 0.1 BTC, exactly as the pipeline would persist it."""
     entry = Trade(
@@ -75,11 +106,8 @@ def _write_round_trip(factory: sessionmaker[Session]) -> None:
     )
     with factory() as session:
         ledger = PortfolioLedger(initial_equity=Decimal("10000"))
-        store = LedgerStore(session)
         for trade in (entry, exit_):
-            update = ledger.apply_trade(trade)
-            store.save_trade(trade)
-            store.save_position(update.position)
+            _persist(session, ledger, trade)
         session.commit()
 
 
@@ -115,10 +143,7 @@ def test_open_position_is_restored_with_its_cost_basis(
     )
     with factory() as session:
         ledger = PortfolioLedger(initial_equity=Decimal("10000"))
-        store = LedgerStore(session)
-        update = ledger.apply_trade(trade)
-        store.save_trade(trade)
-        store.save_position(update.position)
+        _persist(session, ledger, trade)
         session.commit()
 
     restarted = PortfolioLedger(initial_equity=Decimal("10000"))

@@ -1,0 +1,29 @@
+# Build context exclusions. Keep the image free of local state and secrets:
+# .env must never enter an image layer, and the virtualenv is rebuilt inside.
+
+.git
+.gitignore
+.github
+.venv
+.freebuff
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+dist
+build
+.env
+.env.*
+!.env.example
+data/raw
+data/cache
+data/live
+docs
+tests
+infra/compose
+infra/grafana
+infra/prometheus

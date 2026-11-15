@@ -1,0 +1,133 @@
+# Paper-trading stack: the same services as dev, pinned to configs/paper.yaml.
+#
+# No exchange credentials are needed and no live order can leave the platform:
+# execution.broker is `paper`, allow_live_orders is false, and the collector reads
+# committed CSV seeds unless you override market_data.source.
+#
+#   docker compose -f infra/compose/docker-compose.paper.yml up -d --build
+#   API      http://localhost:8000/health
+#   Grafana  http://localhost:3000
+
+name: aegis-trade-paper
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: infra/docker/Dockerfile
+  image: aegis-trade:paper
+  restart: unless-stopped
+  environment: &app-env
+    AEGIS_ENVIRONMENT: paper
+    AEGIS_DATABASE__URL: postgresql+psycopg://aegis:${POSTGRES_PASSWORD:-aegis}@postgres:5432/aegis
+    AEGIS_REDIS__URL: redis://redis:6379/0
+    AEGIS_EXECUTION__MODE: paper
+    AEGIS_EXECUTION__ALLOW_LIVE_ORDERS: "false"
+    AEGIS_RISK__KILL_SWITCH: "false"
+    AEGIS_MARKET_DATA__SOURCE: csv
+    AEGIS_OBSERVABILITY__LOG_LEVEL: INFO
+    AEGIS_OBSERVABILITY__JSON_LOGS: "true"
+    AEGIS_OBSERVABILITY__METRICS_ENABLED: "true"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aegis
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aegis}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis -d aegis"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "-c", "data/migrations/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  collector:
+    <<: *app
+    command: ["python", "-m", "market_collector", "--interval", "60"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    depends_on:
+      api:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-aegis}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

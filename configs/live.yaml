@@ -1,0 +1,35 @@
+# Live mode overlay. Staged for completeness — NOT enabled by this repository.
+#
+# Three independent things must all be true before a real order can leave:
+#   1. execution.mode: live
+#   2. execution.allow_live_orders: true   (deliberate, reviewed change)
+#   3. AEGIS_EXCHANGE__API_KEY / __API_SECRET present in the environment
+# The gateway also refuses to run live while the kill switch is on.
+# Withdrawal endpoints are never implemented.
+
+execution:
+  mode: live
+  broker: live
+  allow_live_orders: false
+
+exchange:
+  testnet: false
+
+market_data:
+  source: exchange
+  stale_after_seconds: 30
+
+risk:
+  kill_switch: false
+  limits:
+    # Tighter than paper: real money, one operator, no co-located execution.
+    max_risk_per_trade_pct: 0.25
+    max_daily_loss_pct: 1
+    max_weekly_loss_pct: 3
+    max_exposure_per_symbol_pct: 10
+    max_total_exposure_pct: 30
+    max_leverage: 1
+
+observability:
+  log_level: INFO
+  json_logs: true

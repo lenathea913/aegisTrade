@@ -1,0 +1,67 @@
+# AegisTrade base configuration.
+# Overlaid by configs/<environment>.yaml, then overridden by AEGIS_* env vars.
+# Never put real credentials here: secrets come from the environment only.
+
+environment: dev  # replaced by the loader with the selected overlay name
+
+database:
+  url: postgresql+psycopg://aegis:aegis@localhost:5432/aegis
+  connect_timeout_seconds: 5   # fail fast when Postgres is unreachable
+  pool_size: 5
+  max_overflow: 5
+  pool_timeout_seconds: 30
+  echo: false
+
+redis:
+  url: redis://localhost:6379/0
+  socket_timeout_seconds: 5
+
+execution:
+  mode: paper
+  broker: paper
+  allow_live_orders: false
+  fee_bps: 5          # 5 bps taker fee on paper fills
+  slippage_bps: 5     # adverse slippage applied to paper market fills
+
+market_data:
+  exchange: binance
+  source: csv            # csv (seed/paper) or exchange (network)
+  csv_dir: data/seeds
+  symbols:
+    - BTC/USDT
+  timeframes:
+    - 1h
+  stale_after_seconds: 60   # risk rule 8: reject intents on older data
+  request_timeout_seconds: 10
+  max_retries: 5
+
+risk:
+  kill_switch: false
+  initial_equity: 10000        # ledger base equity on a fresh start (quote currency)
+  limits:
+    # Percentages are percent units: 0.5 means 0.5 % of equity.
+    max_risk_per_trade_pct: 0.5
+    max_daily_loss_pct: 2
+    max_weekly_loss_pct: 5
+    max_exposure_per_symbol_pct: 20
+    max_total_exposure_pct: 60
+    max_leverage: 1
+    allowed_symbols:
+      - BTC/USDT
+
+exchange:
+  id: binance
+  testnet: true
+  request_timeout_seconds: 10
+  # api_key / api_secret intentionally absent: AEGIS_EXCHANGE__API_KEY etc.
+
+alerting:
+  enabled: false
+  channels: []
+
+observability:
+  service_name: aegis-trade
+  log_level: INFO
+  json_logs: true
+  metrics_enabled: true
+  metrics_port: 9101

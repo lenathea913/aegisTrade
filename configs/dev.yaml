@@ -1,0 +1,12 @@
+# Local development: paper execution, seed CSV market data, verbose logs.
+
+market_data:
+  source: csv
+  stale_after_seconds: 3600   # seed data is historical; freshness is not asserted in dev
+
+observability:
+  log_level: DEBUG
+  json_logs: false            # readable console logs while developing
+
+database:
+  echo: false

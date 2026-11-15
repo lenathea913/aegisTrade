@@ -1,0 +1,18 @@
+# Paper mode: realistic fees/slippage assumptions, no real exchange credentials,
+# no real orders. This is the environment to prove risk, ledger and audit in.
+
+execution:
+  mode: paper
+  broker: paper
+  allow_live_orders: false
+
+market_data:
+  source: csv
+  stale_after_seconds: 120
+
+risk:
+  kill_switch: false
+
+observability:
+  log_level: INFO
+  json_logs: true

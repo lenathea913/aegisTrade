@@ -1,0 +1,56 @@
+"""``market.candles``: OHLCV storage.
+
+The primary key is the natural key ``(symbol, timeframe, open_time)``. That is what
+makes the collector idempotent: re-collecting the same candle is an ``ON CONFLICT
+DO NOTHING/UPDATE`` instead of a duplicate row, and no surrogate id can drift.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import CheckConstraint, DateTime, Integer, Numeric, String, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from aegis_core.enums import Timeframe
+from aegis_db.base import Base
+
+_TIMEFRAME_SQL = ", ".join(f"'{timeframe.value}'" for timeframe in Timeframe)
+
+__all__ = ["Candle"]
+
+
+class Candle(Base):
+    """One OHLCV candle for one symbol/timeframe."""
+
+    __tablename__ = "candles"
+    __table_args__ = (
+        CheckConstraint(f"timeframe IN ({_TIMEFRAME_SQL})", name="ck_candles_timeframe_known"),
+        CheckConstraint("open_time < close_time", name="ck_candles_open_before_close"),
+        CheckConstraint(
+            "high >= GREATEST(open, close) AND low <= LEAST(open, close)",
+            name="ck_candles_ohlc_bounds",
+        ),
+        CheckConstraint("low > 0", name="ck_candles_low_positive"),
+        CheckConstraint("volume >= 0", name="ck_candles_volume_non_negative"),
+        {"schema": "market"},
+    )
+
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, server_default="binance")
+    symbol: Mapped[str] = mapped_column(String(24), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
+    open_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    close_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    open: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    volume: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+
+    trades: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="csv")
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

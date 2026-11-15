@@ -1,0 +1,23 @@
+# Prometheus scrape configuration for the AegisTrade stacks.
+#
+# The API exposes /metrics on its internal port; Prometheus runs in the same compose
+# network and scrapes it by service name. The collector and the future paper runner
+# report through the API's gauges/counters, so there is one scrape target to trust.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: aegis-trade
+
+scrape_configs:
+  - job_name: aegis-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: api
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

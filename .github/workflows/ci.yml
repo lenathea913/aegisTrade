@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  UV_CACHE_DIR: /tmp/uv-cache
+
+jobs:
+  quality:
+    name: lint + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --all-groups
+      - name: ruff (lint)
+        run: uv run ruff check .
+      - name: ruff (format check)
+        run: uv run ruff format --check .
+      - name: mypy (strict)
+        run: uv run mypy
+
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --all-groups
+      - name: unit + integration tests
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+      - name: coverage gate (aegis_risk + aegis_backtest >= 80%)
+        # Activated from FASE 5 onward; keeps the job honest until then.
+        if: ${{ hashFiles('packages/aegis_backtest/**/*.py') != '' }}
+        run: |
+          uv run pytest --cov=packages/aegis_risk --cov=packages/aegis_backtest \
+            --cov-report=term-missing --cov-fail-under=80
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  docker-build:
+    name: docker image
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the runtime image
+        run: docker build -f infra/docker/Dockerfile -t aegis-trade:ci .
+      - name: image must not contain a .env file
+        run: |
+          if docker run --rm --entrypoint sh aegis-trade:ci -c 'test -f /app/.env'; then
+            echo "a .env file was baked into the image"; exit 1
+          fi

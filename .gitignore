@@ -1,0 +1,44 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Local runtime artifacts
+*.log
+logs/
+.benchmarks/
+infra/grafana/data/
+notebooks/.ipynb_checkpoints/
+
+# Data: only seeds/config fixtures are tracked
+data/cache/
+data/raw/
+data/live/
+*.duckdb
+*.sqlite
+*.sqlite3
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

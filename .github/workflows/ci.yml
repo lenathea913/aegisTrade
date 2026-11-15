@@ -63,6 +63,8 @@ jobs:
       - name: apply migrations to the CI database
         run: uv run alembic -c data/migrations/alembic.ini upgrade head
       - name: verify PostgreSQL (triggers, idempotency, round-trips)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages:${{ github.workspace }}/apps
         run: uv run python scripts/verify_postgres.py
       - name: unit + integration tests
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml

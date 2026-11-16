@@ -8,8 +8,10 @@ from aegis_alerting.alerting import (
     AlertLevel,
     LoggingAlerter,
     NullAlerter,
+    alert_for_rejection,
     build_alerter,
 )
+from aegis_alerting.telegram import TelegramAlerter, format_alert
 
 __all__ = [
     "Alert",
@@ -17,5 +19,8 @@ __all__ = [
     "Alerter",
     "LoggingAlerter",
     "NullAlerter",
+    "TelegramAlerter",
+    "alert_for_rejection",
     "build_alerter",
+    "format_alert",
 ]

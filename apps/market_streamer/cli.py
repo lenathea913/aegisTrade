@@ -15,6 +15,7 @@ import threading
 from collections.abc import Sequence
 from typing import Any
 
+from aegis_alerting import build_alerter
 from aegis_config import Settings, load_settings
 from aegis_observability import configure_logging, get_logger
 from market_streamer.marks import InMemoryMarkStore, MarkStore, RedisMarkStore
@@ -72,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         symbols=settings.market_data.symbols,
         store=store,
         reconnect_seconds=settings.streaming.reconnect_seconds,
+        alerter=build_alerter(settings.alerting),
     )
 
     if args.once:

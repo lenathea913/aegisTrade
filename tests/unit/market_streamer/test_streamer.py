@@ -109,6 +109,53 @@ def test_stream_reconnects_after_a_transport_error() -> None:
     assert store.latest("BTC/USDT") is None
 
 
+def test_a_dropped_socket_raises_one_alert() -> None:
+    from aegis_alerting import Alert
+
+    class RecordingAlerter:
+        def __init__(self) -> None:
+            self.alerts: list[Alert] = []
+
+        def send(self, alert: Alert) -> bool:
+            self.alerts.append(alert)
+            return True
+
+    stop = threading.Event()
+    alerter = RecordingAlerter()
+    attempts: list[str] = []
+
+    class Boom:
+        def __enter__(self) -> Boom:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def __iter__(self) -> Iterator[str]:
+            raise ConnectionError("socket died")
+
+    def connect(url: str) -> Boom:
+        attempts.append(url)
+        if len(attempts) >= 3:
+            stop.set()
+        return Boom()
+
+    stream = BinanceMarkStream(
+        url="wss://example/stream",
+        symbols=("BTC/USDT",),
+        store=InMemoryMarkStore(),
+        reconnect_seconds=0.01,
+        connect=connect,
+        alerter=alerter,
+    )
+
+    stream.run(stop)
+
+    # One alert for the outage, not one per reconnect attempt.
+    assert [alert.title for alert in alerter.alerts] == ["WebSocket disconnected"]
+    assert alerter.alerts[0].source == "market_streamer"
+
+
 def test_redis_store_round_trips_through_a_fake_client() -> None:
     class FakeRedis:
         def __init__(self) -> None:

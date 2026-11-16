@@ -27,6 +27,7 @@ from decimal import Decimal
 
 from pydantic import Field
 
+from aegis_alerting import Alerter, alert_for_rejection
 from aegis_config import Settings
 from aegis_core import (
     MarketContext,
@@ -256,9 +257,20 @@ class RiskGate(StrictModel):
     stale_after_seconds: int = Field(default=DEFAULT_STALE_AFTER_SECONDS, ge=1, le=3600)
 
     def evaluate(
-        self, intent: OrderIntent, portfolio_state: PortfolioState, market_context: MarketContext
+        self,
+        intent: OrderIntent,
+        portfolio_state: PortfolioState,
+        market_context: MarketContext,
+        *,
+        alerter: Alerter | None = None,
     ) -> RiskDecision:
-        return evaluate(
+        """Judge one intent and, when an alerter is given, report a rejection.
+
+        ``evaluate()`` stays a pure function; only this holder of the configured
+        kill switch and limits owns the side effect, so the reason strings and the
+        notification text cannot drift apart.
+        """
+        decision = evaluate(
             intent,
             portfolio_state,
             self.limits,
@@ -266,6 +278,14 @@ class RiskGate(StrictModel):
             kill_switch=self.kill_switch,
             stale_after_seconds=self.stale_after_seconds,
         )
+        if alerter is not None and not decision.approved:
+            alert_for_rejection(
+                symbol=intent.symbol,
+                side=intent.side.value,
+                reasons=decision.reasons,
+                alerter=alerter,
+            )
+        return decision
 
     @classmethod
     def from_settings(cls, settings: Settings) -> RiskGate:

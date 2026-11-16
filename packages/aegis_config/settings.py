@@ -222,6 +222,10 @@ class AlertingSettings(_Section):
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
     slack_webhook_url: SecretStr | None = None
+    #: Minimum gap between two Telegram messages (anti-spam under repeated errors).
+    rate_limit_seconds: float = Field(default=2.0, ge=0, le=300)
+    #: An identical alert inside this window is collapsed into one message.
+    dedupe_seconds: float = Field(default=60.0, ge=0, le=3600)
 
     @field_validator("telegram_bot_token", "telegram_chat_id", "slack_webhook_url", mode="before")
     @classmethod

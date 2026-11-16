@@ -30,13 +30,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from aegis_config import Settings, load_settings
 from aegis_core import __version__, get_random_motivation
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
-from aegis_execution import build_broker
+from aegis_execution import ExchangeError, build_broker
 from aegis_ledger import LedgerError, PortfolioLedger
 from aegis_observability import CONTENT_TYPE_LATEST, Metrics, configure_logging, get_logger
 from aegis_risk import RiskGate
+from api.exchange import cancel_order, open_orders
 from api.repository import SqlTradingRepository
 from api.schemas import (
+    CancelOrderResponse,
     ConversionResponse,
+    ExchangeOrderListResponse,
+    ExchangeOrderResponse,
     ExchangeStatusResponse,
     HealthResponse,
     IntentResponse,
@@ -228,6 +232,52 @@ def create_app(
         """Where orders go and whether that venue answers; drives the header badge."""
         return service.exchange_status()
 
+    def _require_exchange() -> None:
+        if not service.exchange_status().connected:
+            raise HTTPException(
+                status_code=503, detail="exchange is not connected; the order view is read-only"
+            )
+
+    @app.get("/api/exchange/orders", response_model=ExchangeOrderListResponse, tags=["exchange"])
+    def exchange_orders() -> ExchangeOrderListResponse:
+        """Orders the venue still has open; empty for the paper broker."""
+        _require_exchange()
+        try:
+            views = open_orders(settings)
+        except ExchangeError as exc:
+            raise HTTPException(status_code=503, detail=f"exchange error: {exc}") from exc
+        return ExchangeOrderListResponse(
+            count=len(views),
+            orders=[
+                ExchangeOrderResponse(
+                    order_id=view.order_id,
+                    symbol=view.symbol,
+                    side=view.side,
+                    status=view.status,
+                    price=None if view.price is None else str(view.price),
+                    qty=None if view.qty is None else str(view.qty),
+                    filled_qty=str(view.filled_qty),
+                )
+                for view in views
+            ],
+        )
+
+    @app.post(
+        "/api/exchange/orders/{order_id}/cancel",
+        response_model=CancelOrderResponse,
+        tags=["exchange"],
+    )
+    def cancel_exchange_order(
+        order_id: str, symbol: str = Query(min_length=3, description="e.g. BTC/USDT")
+    ) -> CancelOrderResponse:
+        """Cancel one live order on the venue and report its resulting status."""
+        _require_exchange()
+        try:
+            status = cancel_order(settings, order_id, symbol)
+        except ExchangeError as exc:
+            raise HTTPException(status_code=503, detail=f"cancel failed: {exc}") from exc
+        return CancelOrderResponse(order_id=order_id, status=status)
+
     # ------------------------------------------------------------- portfolio
 
     @app.get("/positions", tags=["portfolio"])
@@ -345,6 +395,47 @@ def create_app(
                 "preview": service_.risk_preview(selected) if selected else None,
             },
         )
+
+    # -------------------------------------------------------- exchange orders
+
+    def _exchange_orders_context(message: str | None = None) -> dict[str, Any]:
+        status = service.exchange_status()
+        if not status.connected:
+            return {
+                "orders": (),
+                "message": message or f"Exchange offline: {status.detail}",
+            }
+        try:
+            views = open_orders(settings)
+        except ExchangeError as exc:
+            return {"orders": (), "message": f"Cannot list exchange orders: {exc}"}
+        return {"orders": views, "message": message}
+
+    @app.get("/exchange-orders", include_in_schema=False)
+    def exchange_orders_page(request: Request) -> Response:
+        return _render(request, "exchange_orders.html", _exchange_orders_context())
+
+    @app.get("/partials/exchange-orders", include_in_schema=False)
+    def exchange_orders_partial(request: Request) -> Response:
+        return _render(request, "partials/exchange_orders.html", _exchange_orders_context())
+
+    @app.post("/ui/exchange-orders/{order_id}/cancel", include_in_schema=False)
+    def cancel_exchange_order_from_ui(
+        request: Request,
+        order_id: str,
+        symbol: str = Query(min_length=3, description="e.g. BTC/USDT"),
+    ) -> Response:
+        """Cancel from the dashboard; disabled in the UI when the venue is offline."""
+        message: str | None
+        if not service.exchange_status().connected:
+            message = "Cancel refused: the exchange is offline."
+        else:
+            try:
+                status_value = cancel_order(settings, order_id, symbol)
+                message = f"Cancel requested for {order_id} — exchange status {status_value}."
+            except ExchangeError as exc:
+                message = f"Cancel failed: {exc}"
+        return _render(request, "partials/exchange_orders.html", _exchange_orders_context(message))
 
     # HTMX partials: these are what the 5-second polls swap in.
 

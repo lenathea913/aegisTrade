@@ -27,7 +27,7 @@ from aegis_observability import configure_logging, get_logger
 from order_reconciler.reconciler import OrderReconciler, ReconciliationResult
 from order_reconciler.repository import SqlOrderBook
 
-__all__ = ["build_reconciler", "main", "result_payload"]
+__all__ = ["build_reconciler", "main", "reconcile_once", "result_payload"]
 
 
 class _BrokerFeed:
@@ -75,13 +75,32 @@ def _restore_ledger(ledger: PortfolioLedger, factory: sessionmaker[Session]) -> 
     logger.info("reconciler_ledger_reconstructed", trades=summary.trades_replayed)
 
 
+def reconcile_once(
+    settings: Settings, factory: sessionmaker[Session], ledger: PortfolioLedger
+) -> tuple[ReconciliationResult, ...]:
+    """Reconcile every open order once, closing the broker it built.
+
+    Used by the daemon itself (``--once`` loop) and by ``trading_runner`` at startup,
+    so orders that filled or cancelled while the process was down are recorded before
+    the first tick can consider the book final.
+    """
+    broker = build_broker(
+        settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
+    )
+    try:
+        with session_scope(factory) as session:
+            return build_reconciler(settings, session, broker, ledger).run()
+    finally:
+        close = getattr(broker, "close", None)
+        if callable(close):
+            close()
+
+
 def _run_once(
     settings: Settings, factory: sessionmaker[Session], broker: Any, ledger: PortfolioLedger
 ) -> tuple[ReconciliationResult, ...]:
     with session_scope(factory) as session:
-        reconciler = build_reconciler(settings, session, broker, ledger)
-        results = reconciler.run()
-    return results
+        return build_reconciler(settings, session, broker, ledger).run()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -104,10 +123,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     factory = create_session_factory(engine)
     ledger = PortfolioLedger(initial_equity=settings.risk.initial_equity)
     _restore_ledger(ledger, factory)
-    broker = build_broker(
-        settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
-    )
-
     logger.info(
         "reconciler_started",
         broker=settings.execution.broker,
@@ -115,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         while True:
-            results = _run_once(settings, factory, broker, ledger)
+            results = reconcile_once(settings, factory, ledger)
             changed = [result for result in results if result.action != "unchanged"]
             if results:
                 print(

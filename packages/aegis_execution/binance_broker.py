@@ -31,7 +31,7 @@ from urllib.parse import urlencode, urlparse
 import httpx
 from pydantic import SecretStr
 
-from aegis_core import Order, OrderStatus, OrderType, utc_now
+from aegis_core import Order, OrderStatus, OrderType, Side, utc_now
 from aegis_execution.broker import BrokerFill
 from aegis_execution.errors import (
     ExchangeAuthError,
@@ -45,6 +45,7 @@ __all__ = [
     "BinanceTestnetBroker",
     "ExchangeOrderState",
     "ensure_testnet_base_url",
+    "from_exchange_symbol",
     "to_exchange_symbol",
 ]
 
@@ -66,6 +67,15 @@ _AUTH_STATUS = frozenset({401, 403})
 def to_exchange_symbol(symbol: str) -> str:
     """``BTC/USDT`` -> ``BTCUSDT`` (Binance's symbol format)."""
     return symbol.replace("/", "").upper()
+
+
+def from_exchange_symbol(symbol: str) -> str:
+    """``BTCUSDT`` -> ``BTC/USDT``; unknown quotes are returned unchanged."""
+    upper = symbol.upper()
+    for quote in ("USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH"):
+        if upper.endswith(quote) and len(upper) > len(quote):
+            return f"{upper[: -len(quote)]}/{quote}"
+    return symbol
 
 
 def ensure_testnet_base_url(base_url: str, *, live_confirm: bool = False) -> str:
@@ -97,6 +107,11 @@ class ExchangeOrderState:
     status: OrderStatus
     filled_qty: Decimal
     avg_price: Decimal | None
+    #: Populated by ``fetch_open_orders``; the single-order calls leave them unset.
+    symbol: str | None = None
+    side: Side | None = None
+    price: Decimal | None = None
+    qty: Decimal | None = None
 
     @property
     def is_terminal(self) -> bool:
@@ -158,7 +173,7 @@ class BinanceTestnetBroker:
             params["timeInForce"] = "GTC"
             params["price"] = _decimal_text(order.price)
 
-        payload = self._request("POST", "/api/v3/order", params)
+        payload = _as_object(self._request("POST", "/api/v3/order", params), "/api/v3/order")
         state = _state_from_payload(payload, fallback_id=order.order_id)
         if state.filled_qty <= 0:
             return None
@@ -174,25 +189,46 @@ class BinanceTestnetBroker:
 
     def fetch(self, exchange_order_id: str, *, symbol: str) -> ExchangeOrderState:
         """Ask the exchange for one order's current state."""
-        payload = self._request(
-            "GET",
+        payload = _as_object(
+            self._request(
+                "GET",
+                "/api/v3/order",
+                {
+                    "symbol": to_exchange_symbol(symbol),
+                    "orderId": exchange_order_id,
+                },
+            ),
             "/api/v3/order",
-            {
-                "symbol": to_exchange_symbol(symbol),
-                "orderId": exchange_order_id,
-            },
         )
         return _state_from_payload(payload, fallback_id=exchange_order_id)
 
+    def fetch_open_orders(self) -> tuple[ExchangeOrderState, ...]:
+        """Every order the venue still has open (``GET /api/v3/openOrders``)."""
+        payload = self._request("GET", "/api/v3/openOrders", {})
+        if not isinstance(payload, list):
+            raise ExchangeError("exchange returned an unexpected open-orders payload")
+        return tuple(
+            _state_from_payload(item, fallback_id="", with_order_fields=True)
+            for item in payload
+            if isinstance(item, dict)
+        )
+
+    def verify_credentials(self) -> None:
+        """Signed ``GET /api/v3/account``; raises when the keys are invalid."""
+        self._request("GET", "/api/v3/account", {})
+
     def cancel(self, exchange_order_id: str, *, symbol: str) -> ExchangeOrderState:
         """Cancel the remainder of an order and return its resulting state."""
-        payload = self._request(
-            "DELETE",
+        payload = _as_object(
+            self._request(
+                "DELETE",
+                "/api/v3/order",
+                {
+                    "symbol": to_exchange_symbol(symbol),
+                    "orderId": exchange_order_id,
+                },
+            ),
             "/api/v3/order",
-            {
-                "symbol": to_exchange_symbol(symbol),
-                "orderId": exchange_order_id,
-            },
         )
         return _state_from_payload(payload, fallback_id=exchange_order_id)
 
@@ -221,7 +257,9 @@ class BinanceTestnetBroker:
         ).hexdigest()
         return {**signed, "signature": signature}
 
-    def _request(self, method: str, path: str, params: dict[str, str]) -> dict[str, Any]:
+    def _request(
+        self, method: str, path: str, params: dict[str, str]
+    ) -> dict[str, Any] | list[Any]:
         signed = self._signed_params(params)
         headers = {"X-MBX-APIKEY": self._api_key}
         try:
@@ -244,9 +282,25 @@ class BinanceTestnetBroker:
             payload = response.json()
         except ValueError as exc:
             raise ExchangeError(f"exchange returned non-JSON on {path}") from exc
-        if not isinstance(payload, dict):
+        if not isinstance(payload, (dict, list)):
             raise ExchangeError(f"exchange returned an unexpected payload on {path}")
         return payload
+
+
+def _as_object(payload: dict[str, Any] | list[Any], path: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ExchangeError(f"exchange returned an unexpected payload on {path}")
+    return payload
+
+
+def _decimal_or_none(raw: Any) -> Decimal | None:
+    if raw is None:
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (ArithmeticError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _value(secret: SecretStr | str) -> str:
@@ -280,7 +334,9 @@ def _commission(payload: dict[str, Any]) -> Decimal:
     return total
 
 
-def _state_from_payload(payload: dict[str, Any], *, fallback_id: str) -> ExchangeOrderState:
+def _state_from_payload(
+    payload: dict[str, Any], *, fallback_id: str, with_order_fields: bool = False
+) -> ExchangeOrderState:
     raw_status = str(payload.get("status", "")).upper()
     status = _STATUS_MAP.get(raw_status)
     if status is None:
@@ -293,9 +349,14 @@ def _state_from_payload(payload: dict[str, Any], *, fallback_id: str) -> Exchang
             avg_price = Decimal(str(quote_qty)) / filled
         else:
             avg_price = Decimal(str(payload.get("price", "0") or "0")) or None
+    raw_side = str(payload.get("side", "")).upper()
     return ExchangeOrderState(
         exchange_order_id=str(payload.get("orderId", fallback_id)),
         status=status,
         filled_qty=filled,
         avg_price=avg_price,
+        symbol=from_exchange_symbol(str(payload.get("symbol", ""))) if with_order_fields else None,
+        side=Side(raw_side) if with_order_fields and raw_side in {"BUY", "SELL"} else None,
+        price=_decimal_or_none(payload.get("price")) if with_order_fields else None,
+        qty=_decimal_or_none(payload.get("origQty")) if with_order_fields else None,
     )

@@ -22,7 +22,15 @@ from aegis_core import StrictModel, utc_now
 from aegis_core.types import NonEmptyStr, UtcDatetime
 from aegis_observability import get_logger
 
-__all__ = ["Alert", "AlertLevel", "Alerter", "LoggingAlerter", "NullAlerter", "build_alerter"]
+__all__ = [
+    "Alert",
+    "AlertLevel",
+    "Alerter",
+    "LoggingAlerter",
+    "NullAlerter",
+    "alert_for_rejection",
+    "build_alerter",
+]
 
 
 class AlertLevel(StrEnum):
@@ -82,6 +90,62 @@ class LoggingAlerter:
         return True
 
 
+def alert_for_rejection(
+    *, symbol: str, side: str, reasons: tuple[str, ...], alerter: Alerter | None
+) -> None:
+    """Notify a risk rejection, promoting kill-switch and daily-loss cases.
+
+    This is the one place that maps a ``RiskDecision`` to an alert, so every caller
+    (gate, pipeline, runner) says the same thing about the same rejection.
+    """
+    if alerter is None:
+        return
+    joined = ",".join(reasons)
+    if any(reason.startswith("kill_switch_active") for reason in reasons):
+        alert = Alert(
+            level=AlertLevel.CRITICAL,
+            title="Kill switch active",
+            message="Trading is halted: the kill switch rejected this order.",
+            source="risk",
+            context={
+                "symbol": symbol,
+                "side": side,
+                "status": "REJECTED",
+                "reason": "kill_switch_active",
+            },
+        )
+    elif any(reason.startswith("daily_loss_limit_reached") for reason in reasons):
+        alert = Alert(
+            level=AlertLevel.CRITICAL,
+            title="Daily loss limit reached",
+            message="The daily loss limit was touched; new risk is blocked for the day.",
+            source="risk",
+            context={"symbol": symbol, "side": side, "status": "REJECTED", "reason": joined},
+        )
+    else:
+        alert = Alert(
+            level=AlertLevel.WARNING,
+            title="Order rejected by risk engine",
+            message="The risk engine refused this intent.",
+            source="risk",
+            context={"symbol": symbol, "side": side, "status": "REJECTED", "reason": joined},
+        )
+    alerter.send(alert)
+
+
 def build_alerter(settings: AlertingSettings) -> Alerter:
-    """Enabled -> log-only stub; disabled -> silent no-op."""
-    return LoggingAlerter() if settings.enabled else NullAlerter()
+    """Telegram when configured, the log when only logging is available, silence if off."""
+    if not settings.enabled:
+        return NullAlerter()
+    if "telegram" in settings.channels:
+        from aegis_alerting.telegram import TelegramAlerter
+
+        assert settings.telegram_bot_token is not None  # validator guarantees this
+        assert settings.telegram_chat_id is not None
+        return TelegramAlerter(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            rate_limit_seconds=settings.rate_limit_seconds,
+            dedupe_seconds=settings.dedupe_seconds,
+        )
+    return LoggingAlerter()

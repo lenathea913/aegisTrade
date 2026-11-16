@@ -16,21 +16,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from aegis_alerting import Alert, AlertLevel, build_alerter
 from aegis_config import Settings, load_settings
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
 from aegis_ledger import LedgerError, LedgerStore, LedgerWriter, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
 from aegis_risk import RiskGate
+from order_reconciler.cli import reconcile_once
 from position_monitor.quotes import CandleQuoteSource, live_quote_source
 from signal_service import SignalService, SqlCandleRepository
 from trading_runner.candles import SqlLatestCandleSource
@@ -64,10 +67,37 @@ def restore_ledger(ledger: PortfolioLedger, factory: sessionmaker[Session]) -> N
     )
 
 
+def reconcile_at_startup(
+    settings: Settings, factory: sessionmaker[Session], ledger: PortfolioLedger
+) -> None:
+    """Settle orders that may have filled while the process was down.
+
+    The reconciler is the only writer of late fills, and a daemon that starts with a
+    stale book would size the next order against a position it does not know it has.
+    A failure here is logged, not fatal: the periodic reconciler keeps trying.
+    """
+    logger = get_logger("aegis.runner")
+    if settings.execution.broker == "paper":
+        return
+    try:
+        results = reconcile_once(settings, factory, ledger)
+    except Exception as exc:
+        logger.error("runner_startup_reconcile_failed", error=str(exc))
+        return
+    changed = [result for result in results if result.action != "unchanged"]
+    logger.info(
+        "runner_startup_reconcile",
+        checked=len(results),
+        changed=len(changed),
+        orders=[result.order_id for result in changed],
+    )
+
+
 def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingRunner:
     """Wire the runner: real gate, paper/live broker per config, SQL candles."""
     ledger = PortfolioLedger(initial_equity=settings.risk.initial_equity)
     restore_ledger(ledger, factory)
+    reconcile_at_startup(settings, factory, ledger)
     signals = SignalService(
         gate=RiskGate.from_settings(settings),
         ledger=ledger,
@@ -83,6 +113,7 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         quotes=CandleQuoteSource(factory),
         writer_factory=lambda: _writer(factory),
         live_quotes=live_quote_source(settings, factory),
+        alerter=build_alerter(settings.alerting),
     )
 
 
@@ -125,6 +156,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)
     runner = build_runner(settings, factory)
+    if settings.risk.kill_switch:
+        build_alerter(settings.alerting).send(
+            Alert(
+                level=AlertLevel.CRITICAL,
+                title="Kill switch active",
+                message="The runner started with risk.kill_switch=true; no entries.",
+                source="runner",
+                context={"status": "HALTED", "reason": "kill_switch"},
+            )
+        )
 
     try:
         if args.once:
@@ -132,6 +173,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         lock = threading.Lock()
+        stop = threading.Event()
+
+        def _shutdown(signum: int, _frame: Any) -> None:
+            # SIGTERM from an orchestrator and Ctrl-C both land here, so the scheduler
+            # is stopped after the job in flight rather than mid-write.
+            logger.info("runner_shutdown_requested", signal=signum)
+            stop.set()
+
+        signal.signal(signal.SIGTERM, _shutdown)
+        signal.signal(signal.SIGINT, _shutdown)
 
         def entry_job() -> None:
             with lock:
@@ -141,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with lock:
                 runner.run_monitor_cycle()
 
-        scheduler = BlockingScheduler(timezone="UTC")
+        scheduler = BackgroundScheduler(timezone="UTC")
         scheduler.add_job(
             entry_job,
             IntervalTrigger(seconds=settings.runner.signal_interval_seconds),
@@ -166,10 +217,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             monitor_enabled=settings.runner.monitor_enabled and not args.no_monitor,
             kill_switch=settings.risk.kill_switch,
         )
+        scheduler.start()
         try:
-            scheduler.start()
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("runner_stopped")
+            while not stop.wait(timeout=1.0):
+                pass
+        except KeyboardInterrupt:  # pragma: no cover - stop already set by the handler
+            pass
+        finally:
+            scheduler.shutdown(wait=True)
+            logger.info("runner_stopped", graceful=True)
     finally:
         engine.dispose()
 

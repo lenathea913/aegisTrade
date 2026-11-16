@@ -1,0 +1,53 @@
+<div id="exchange-orders" class="mt-4" hx-get="/partials/exchange-orders" hx-trigger="every 10s" hx-swap="outerHTML">
+  {% if message %}
+    <p class="mb-3 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-sm text-amber-200">{{ message }}</p>
+  {% endif %}
+
+  {% if orders %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-left text-sm">
+        <thead class="text-xs uppercase tracking-wide text-slate-500">
+          <tr>
+            <th class="py-2 pr-3">Order</th>
+            <th class="py-2 pr-3">Symbol</th>
+            <th class="py-2 pr-3">Side</th>
+            <th class="py-2 pr-3">Status</th>
+            <th class="py-2 pr-3">Price</th>
+            <th class="py-2 pr-3">Qty</th>
+            <th class="py-2 pr-3">Filled</th>
+            <th class="py-2"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800 font-mono text-xs">
+          {% for order in orders %}
+            <tr>
+              <td class="py-2 pr-3 text-slate-400">{{ order.order_id }}</td>
+              <td class="py-2 pr-3">{{ order.symbol }}</td>
+              <td class="py-2 pr-3">{{ order.side or "—" }}</td>
+              <td class="py-2 pr-3">
+                <span class="rounded bg-amber-500/15 px-2 py-0.5 text-amber-200">{{ order.status }}</span>
+              </td>
+              <td class="py-2 pr-3">{{ order.price if order.price is not none else "market" }}</td>
+              <td class="py-2 pr-3">{{ order.qty if order.qty is not none else "—" }}</td>
+              <td class="py-2 pr-3">{{ order.filled_qty }}</td>
+              <td class="py-2 text-right">
+                <button
+                  class="rounded border border-rose-500/40 px-2 py-1 text-rose-200 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
+                  hx-post="/ui/exchange-orders/{{ order.order_id }}/cancel?symbol={{ order.symbol | urlencode }}"
+                  hx-target="#exchange-orders"
+                  hx-swap="outerHTML"
+                  hx-confirm="Cancel order {{ order.order_id }} on the exchange? This cannot be undone."
+                  {% if not exchange or not exchange.connected %}disabled{% endif %}
+                >
+                  Cancel Order
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="text-sm text-slate-400">No open orders on the exchange.</p>
+  {% endif %}
+</div>

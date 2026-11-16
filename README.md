@@ -15,7 +15,7 @@ change explainable after the fact.
 > every five seconds, and shows mode + connectivity badges in the header. The
 > dashboard still cannot execute anything: conversion stops at a `DRAFT` intent, and
 > Convert is disabled whenever the exchange is unreachable. Testnet only — never
-> real keys; see `docs/runbooks/live-testnet-setup.md`.
+> real keys; see `docs/runbooks/live-trading-setup.md`.
 > Schema, triggers, idempotency, the journal and ledger reconstruction were
 > exercised on PostgreSQL 16; the Docker image is built in CI, not on the build
 > machine (no Docker locally).

@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from aegis_alerting import Alert, Alerter, AlertLevel
 from aegis_core import (
     ApprovedOrder,
     MarketContext,
@@ -83,8 +84,10 @@ class TradingPipeline:
         gateway: ExecutionGateway,
         ledger: PortfolioLedger,
         writer: LedgerWriter | None = None,
+        alerter: Alerter | None = None,
     ) -> None:
         self._gate = gate
+        self._alerter = alerter
         self._gateway = gateway
         self._ledger = ledger
         self._writer = writer
@@ -97,7 +100,8 @@ class TradingPipeline:
     def process(self, intent: OrderIntent, market: MarketContext) -> PipelineResult:
         """Evaluate, execute and record one intent."""
         state = self._ledger.snapshot(now=market.now)
-        decision = self._gate.evaluate(intent, state, market)
+        # The gate owns risk rejections (kill switch, daily loss included).
+        decision = self._gate.evaluate(intent, state, market, alerter=self._alerter)
 
         if not decision.approved:
             # A rejection is the gate doing its job. Log it at INFO with a next step,
@@ -177,6 +181,21 @@ class TradingPipeline:
                 },
             )
             events.append(failure)
+            self._notify(
+                Alert(
+                    level=AlertLevel.CRITICAL,
+                    title="Order rejected by exchange",
+                    message=f"The venue refused or could not take the order: {exc}",
+                    source="execution",
+                    context={
+                        "symbol": intent.symbol,
+                        "side": intent.side.value,
+                        "status": "REJECTED",
+                        "price": str(market.price(intent.symbol)),
+                        "reason": "exchange_error",
+                    },
+                )
+            )
             # The approval is part of the record even though no fill followed it.
             self._emit(*events)
             return PipelineResult(
@@ -279,6 +298,21 @@ class TradingPipeline:
             self._writer.save_trade(trade)
             self._writer.save_position(update.position)
         self._emit(*events)
+        self._notify(
+            Alert(
+                level=AlertLevel.INFO,
+                title="Order filled",
+                message=f"{trade.side.value} {trade.qty} {trade.symbol} at {trade.price}.",
+                source="execution",
+                context={
+                    "symbol": trade.symbol,
+                    "side": trade.side.value,
+                    "status": "FILLED",
+                    "price": str(trade.price),
+                    "reason": intent.strategy_id,
+                },
+            )
+        )
 
         return PipelineResult(
             intent=intent,
@@ -294,6 +328,10 @@ class TradingPipeline:
     def _persist_order(self, order: Order, approved: ApprovedOrder) -> None:
         if self._writer is not None:
             self._writer.save_order(order, approved)
+
+    def _notify(self, alert: Alert) -> None:
+        if self._alerter is not None:
+            self._alerter.send(alert)
 
     def _emit(self, *events: AuditEvent) -> None:
         if self._writer is None:

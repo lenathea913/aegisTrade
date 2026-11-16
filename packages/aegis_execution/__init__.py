@@ -13,6 +13,7 @@ from aegis_execution.binance_broker import (
     BinanceTestnetBroker,
     ExchangeOrderState,
     ensure_testnet_base_url,
+    from_exchange_symbol,
 )
 from aegis_execution.broker import Broker, BrokerFill, LiveBroker, PaperBroker, build_broker
 from aegis_execution.errors import (
@@ -45,4 +46,5 @@ __all__ = [
     "TradingPipeline",
     "build_broker",
     "ensure_testnet_base_url",
+    "from_exchange_symbol",
 ]

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from aegis_alerting import Alerter
 from aegis_config import ExecutionMode, Settings
 from aegis_core import (
     MarketContext,
@@ -114,6 +115,7 @@ class TradingRunner:
         quotes: QuoteSource,
         writer_factory: WriterFactory,
         live_quotes: QuoteSource | None = None,
+        alerter: Alerter | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._settings = settings
@@ -123,6 +125,7 @@ class TradingRunner:
         self._quotes = quotes
         self._writer_factory = writer_factory
         self._live_quotes = live_quotes
+        self._alerter = alerter
         self._clock = clock
         self._timeframe: Timeframe = settings.market_data.timeframes[0]
         self._logger = get_logger("aegis.runner")
@@ -305,6 +308,7 @@ class TradingRunner:
             gateway=gateway,
             ledger=self._ledger,
             writer=writer,
+            alerter=self._alerter,
         )
 
     def _monitor(self, writer: LedgerWriter | None) -> PositionMonitor:

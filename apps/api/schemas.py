@@ -16,7 +16,10 @@ from pydantic import BaseModel, Field
 from aegis_core import OrderIntent, Signal
 
 __all__ = [
+    "CancelOrderResponse",
     "ConversionResponse",
+    "ExchangeOrderListResponse",
+    "ExchangeOrderResponse",
     "ExchangeStatusResponse",
     "HealthResponse",
     "IntentResponse",
@@ -201,6 +204,29 @@ class ExchangeStatusResponse(BaseModel):
     connected: bool
     detail: str
     checked_at: datetime
+
+
+class ExchangeOrderResponse(BaseModel):
+    """One order still live on the exchange (not yet final in the ledger)."""
+
+    order_id: str
+    symbol: str
+    side: str | None
+    status: str
+    price: str | None
+    qty: str | None
+    filled_qty: str
+
+
+class ExchangeOrderListResponse(BaseModel):
+    count: int
+    orders: list[ExchangeOrderResponse]
+
+
+class CancelOrderResponse(BaseModel):
+    order_id: str
+    status: str
+    cancelled: Literal[True] = True
 
 
 class ConversionResponse(BaseModel):

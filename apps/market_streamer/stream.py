@@ -19,6 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from aegis_alerting import Alert, Alerter, AlertLevel
 from aegis_core import utc_now
 from aegis_observability import get_logger
 from market_streamer.marks import Mark, MarkStore
@@ -100,6 +101,7 @@ class BinanceMarkStream:
         reconnect_seconds: float = 5.0,
         connect: ConnectionFactory | None = None,
         clock: Callable[[], datetime] = utc_now,
+        alerter: Alerter | None = None,
     ) -> None:
         if not symbols:
             raise ValueError("the mark stream needs at least one symbol")
@@ -109,6 +111,8 @@ class BinanceMarkStream:
         self._reconnect = reconnect_seconds
         self._connect: ConnectionFactory = connect or _default_connect
         self._clock = clock
+        self._alerter = alerter
+        self._was_disconnected = False
         self._logger = get_logger("aegis.market_streamer")
 
     @property
@@ -132,7 +136,22 @@ class BinanceMarkStream:
         if mark is None:
             return None
         self._store.set(mark)
+        if self._was_disconnected:
+            # A TCP handshake is not recovery; the first real mark is.
+            self._was_disconnected = False
+            self._notify(
+                Alert(
+                    level=AlertLevel.INFO,
+                    title="WebSocket reconnected",
+                    message="Real-time marks are flowing again.",
+                    source="market_streamer",
+                )
+            )
         return mark
+
+    def _notify(self, alert: Alert) -> None:
+        if self._alerter is not None:
+            self._alerter.send(alert)
 
     def run(self, stop: threading.Event | None = None) -> None:
         """Read until ``stop`` is set, reconnecting with a fixed delay on failure."""
@@ -150,6 +169,21 @@ class BinanceMarkStream:
                         self.handle(raw)
             except Exception as exc:
                 self._logger.warning("mark_stream_disconnected", error=str(exc))
+                if not self._was_disconnected:
+                    # One alert per outage, not one per reconnect attempt.
+                    self._was_disconnected = True
+                    self._notify(
+                        Alert(
+                            level=AlertLevel.WARNING,
+                            title="WebSocket disconnected",
+                            message=(
+                                "The mark feed dropped; prices go stale and live-price "
+                                f"exits fall back to closed candles. Reason: {exc}"
+                            ),
+                            source="market_streamer",
+                            context={"reason": type(exc).__name__},
+                        )
+                    )
             if stop is not None and stop.is_set():
                 break
             time.sleep(self._reconnect)

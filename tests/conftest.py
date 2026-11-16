@@ -11,13 +11,14 @@ approval*:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from aegis_config.settings import Settings
 from aegis_core import (
     ApprovedOrder,
     MarketContext,
@@ -29,6 +30,21 @@ from aegis_core import (
     Side,
 )
 from aegis_risk import RiskGate
+
+#: Tests must be reproducible on a developer machine that has a populated ``.env``
+#: (live keys, ``market_data.source=binance``, alerting on). The suite asserts the
+#: committed YAML defaults, so the dotenv source is disabled for the whole session.
+_settings_config = Settings.model_config
+_original_env_file = _settings_config.get("env_file")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ignore_local_dotenv() -> Iterator[None]:
+    _settings_config["env_file"] = None
+    try:
+        yield
+    finally:
+        _settings_config["env_file"] = _original_env_file
 
 
 @pytest.fixture

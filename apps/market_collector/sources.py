@@ -23,15 +23,22 @@ from typing import Any, Protocol
 import httpx
 
 from aegis_backtest import load_candles_csv
-from aegis_core import Candle, Timeframe
+from aegis_core import Candle, Timeframe, utc_now
 
 __all__ = [
+    "BINANCE_MAINNET_BASE_URL",
     "BinanceKlineSource",
     "CandleSource",
     "CollectorError",
     "CsvCandleSource",
     "build_source",
 ]
+
+
+#: Public REST hosts. Klines need no credentials, but the host still follows the
+#: exchange environment so a testnet run never mixes prices with mainnet.
+BINANCE_MAINNET_BASE_URL = "https://api.binance.com"
+BINANCE_TESTNET_BASE_URL = "https://testnet.binance.vision"
 
 
 class CollectorError(RuntimeError):
@@ -130,7 +137,17 @@ class BinanceKlineSource:
         except ValueError as exc:
             raise CollectorError(f"binance returned invalid JSON: {exc}") from exc
 
-        return self._parse(payload, symbol=symbol, timeframe=timeframe)
+        candles = self._parse(payload, symbol=symbol, timeframe=timeframe)
+        # Binance includes the candle that is still forming; its close_time is in the
+        # future. Storing it would feed an unfinished bar to the strategies (and report
+        # a negative lag), so only closed candles leave this source.
+        now = utc_now()
+        closed = [candle for candle in candles if candle.close_time <= now]
+        if not closed:
+            raise CollectorError(
+                f"binance returned no closed candles for {symbol} {timeframe.value}"
+            )
+        return closed
 
     @staticmethod
     def _parse(payload: Any, *, symbol: str, timeframe: Timeframe) -> list[Candle]:
@@ -161,11 +178,23 @@ class BinanceKlineSource:
 
 
 def build_source(
-    source: str, *, csv_dir: Path | str, timeout_seconds: float = 10.0
+    source: str,
+    *,
+    csv_dir: Path | str,
+    timeout_seconds: float = 10.0,
+    base_url: str = BINANCE_MAINNET_BASE_URL,
 ) -> CandleSource:
-    """Factory used by the CLI and the paper stack."""
+    """Factory used by the CLI and the paper stack.
+
+    ``binance`` and ``exchange`` select the live klines source; only ``csv`` is the
+    offline seed path. An unknown value fails loudly instead of falling back to seeds,
+    because silently trading last year's prices is worse than refusing to start.
+    """
     if source == "csv":
         return CsvCandleSource(csv_dir)
-    if source == "exchange":
-        return BinanceKlineSource(timeout_seconds=timeout_seconds)
+    if source in {"exchange", "binance"}:
+        return BinanceKlineSource(
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+        )
     raise ValueError(f"unknown market data source: {source!r}")

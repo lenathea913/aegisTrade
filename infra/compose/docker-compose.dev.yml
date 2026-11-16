@@ -18,6 +18,12 @@ x-app: &app
     dockerfile: infra/docker/Dockerfile
   image: aegis-trade:dev
   restart: unless-stopped
+  # Local overrides (AEGIS_MARKET_DATA__SOURCE=binance, keys, ...) come from the
+  # repository .env. `environment` below still wins for container-specific values
+  # such as the Postgres hostname, so a localhost URL in .env never breaks the stack.
+  env_file:
+    - path: ../../.env
+      required: false
   environment: &app-env
     AEGIS_ENVIRONMENT: dev
     AEGIS_DATABASE__URL: postgresql+psycopg://aegis:${POSTGRES_PASSWORD:-aegis}@postgres:5432/aegis

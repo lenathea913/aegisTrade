@@ -150,7 +150,9 @@ class MarketDataSettings(_Section):
     """What the collector gathers and how stale a candle may be for trading."""
 
     exchange: str = Field(default="binance", min_length=1, max_length=32)
-    source: Literal["csv", "exchange"] = "csv"
+    #: ``binance`` and ``exchange`` both mean the public klines API; ``csv`` is the
+    #: offline seed data. Accepting both names keeps old configs working.
+    source: Literal["csv", "exchange", "binance"] = "csv"
     csv_dir: str = "data/seeds"
     symbols: tuple[SymbolStr, ...] = ("BTC/USDT",)
     timeframes: tuple[Timeframe, ...] = (Timeframe.H1,)

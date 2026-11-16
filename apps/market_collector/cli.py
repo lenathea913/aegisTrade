@@ -20,12 +20,30 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from aegis_config import Settings, load_settings
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
+from aegis_observability import configure_logging, get_logger
 from market_collector.collector import CollectionSummary, MarketCollector
 from market_collector.retry import RetryPolicy
-from market_collector.sources import CandleSource, build_source
+from market_collector.sources import (
+    BINANCE_MAINNET_BASE_URL,
+    BINANCE_TESTNET_BASE_URL,
+    CandleSource,
+    build_source,
+)
 from market_collector.store import CandleStore
 
-__all__ = ["build_collector", "build_source_for", "main", "summary_payload"]
+__all__ = ["build_collector", "build_source_for", "klines_base_url", "main", "summary_payload"]
+
+
+def klines_base_url(settings: Settings) -> str:
+    """Where the klines request goes: the testnet host only when testnet is configured."""
+    configured = settings.exchange.base_url.rstrip("/")
+    if settings.exchange.testnet:
+        return configured if "testnet.binance.vision" in configured else BINANCE_TESTNET_BASE_URL
+    if "testnet.binance.vision" in configured:
+        # ``exchange.base_url`` defaults to testnet while ``testnet: false`` asks for
+        # mainnet prices; prefer the configured intent over the leftover default.
+        return BINANCE_MAINNET_BASE_URL
+    return configured
 
 
 def build_source_for(settings: Settings) -> CandleSource:
@@ -33,6 +51,7 @@ def build_source_for(settings: Settings) -> CandleSource:
         settings.market_data.source,
         csv_dir=settings.market_data.csv_dir,
         timeout_seconds=settings.market_data.request_timeout_seconds,
+        base_url=klines_base_url(settings),
     )
 
 
@@ -100,6 +119,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = load_settings()
+    configure_logging(settings.observability)
+    logger = get_logger("aegis.collector")
+    # Say which source this process uses, so a mis-wired env var is visible in the log
+    # instead of being inferred from stale candles hours later.
+    logger.info(
+        "collector_started",
+        source=settings.market_data.source,
+        source_class=type(build_source_for(settings)).__name__,
+        klines_base_url=klines_base_url(settings),
+        testnet=settings.exchange.testnet,
+        symbols=list(settings.market_data.symbols),
+    )
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)
 

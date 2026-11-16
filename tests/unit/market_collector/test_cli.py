@@ -14,9 +14,19 @@ from sqlalchemy.orm import Session
 from aegis_config import load_settings
 from aegis_core import Timeframe
 from market_collector import cli
-from market_collector.cli import build_collector, build_source_for, summary_payload
+from market_collector.cli import (
+    build_collector,
+    build_source_for,
+    klines_base_url,
+    summary_payload,
+)
 from market_collector.collector import CollectionSummary, SeriesResult
-from market_collector.sources import CsvCandleSource
+from market_collector.sources import (
+    BINANCE_MAINNET_BASE_URL,
+    BINANCE_TESTNET_BASE_URL,
+    BinanceKlineSource,
+    CsvCandleSource,
+)
 
 
 @contextlib.contextmanager
@@ -54,6 +64,44 @@ def test_collector_is_built_from_settings() -> None:
     collector = build_collector(settings, cast(Session, object()))
 
     assert collector.source_kind == "CsvCandleSource"
+
+
+def test_source_binance_selects_the_live_klines_source() -> None:
+    """``AEGIS_MARKET_DATA__SOURCE=binance`` must not fall back to CSV seeds."""
+    settings = load_settings("paper", overrides={"market_data": {"source": "binance"}})
+
+    source = build_source_for(settings)
+
+    assert isinstance(source, BinanceKlineSource)
+    assert not isinstance(source, CsvCandleSource)
+    assert klines_base_url(settings) == BINANCE_TESTNET_BASE_URL  # testnet is the default
+
+
+def test_the_exchange_name_keeps_working() -> None:
+    settings = load_settings("paper", overrides={"market_data": {"source": "exchange"}})
+
+    assert isinstance(build_source_for(settings), BinanceKlineSource)
+
+
+def test_klines_follow_the_exchange_environment() -> None:
+    testnet = load_settings("paper", overrides={"exchange": {"testnet": True}})
+    mainnet = load_settings("paper", overrides={"exchange": {"testnet": False}})
+    explicit = load_settings(
+        "paper",
+        overrides={"exchange": {"testnet": False, "base_url": "https://api.binance.com"}},
+    )
+
+    assert klines_base_url(testnet) == BINANCE_TESTNET_BASE_URL
+    # ``exchange.base_url`` defaults to testnet; ``testnet: false`` must still mean mainnet.
+    assert klines_base_url(mainnet) == BINANCE_MAINNET_BASE_URL
+    assert klines_base_url(explicit) == "https://api.binance.com"
+
+
+def test_an_unknown_source_fails_loudly(tmp_path: Path) -> None:
+    from market_collector.sources import build_source
+
+    with pytest.raises(ValueError, match="unknown market data source"):
+        build_source("yahoo", csv_dir=tmp_path)
 
 
 def test_summary_payload_is_json_ready() -> None:

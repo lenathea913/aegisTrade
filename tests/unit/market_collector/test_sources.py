@@ -43,6 +43,34 @@ def write_seed(tmp_path: Path, body: str = CSV_ROWS) -> Path:
     return path
 
 
+def test_the_still_forming_candle_is_dropped() -> None:
+    from datetime import timedelta
+
+    from aegis_core import utc_now
+
+    def row(open_ms: int, close_ms: int, price: str) -> list[object]:
+        return [open_ms, price, price, price, price, "10", close_ms, "0", 5, "0", "0", "0"]
+
+    now = utc_now()
+    closed_close = int((now - timedelta(hours=1)).timestamp() * 1000)
+    open_close = int((now + timedelta(hours=1)).timestamp() * 1000)
+    open_ms = int((now - timedelta(hours=2)).timestamp() * 1000)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                row(open_ms, closed_close, "100"),
+                row(closed_close, open_close, "101"),
+            ],
+        )
+
+    with BinanceKlineSource(client=make_client(handler)) as source:
+        candles = source.fetch("BTC/USDT", Timeframe.H1, 500)
+
+    assert [str(candle.close) for candle in candles] == ["100"]
+
+
 def test_csv_source_resolves_the_expected_filename(tmp_path: Path) -> None:
     source = CsvCandleSource(tmp_path)
 

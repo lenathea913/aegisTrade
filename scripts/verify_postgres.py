@@ -192,18 +192,22 @@ def _pipeline_check(settings: object) -> None:
 
 
 def _collector_check(settings: object) -> None:
-    from aegis_config import Settings
+    from aegis_config import Settings, load_settings
     from market_collector.cli import build_collector
 
     assert isinstance(settings, Settings)
-    engine = create_engine_from_settings(settings.database)
+    # This script verifies the database, not the venue: it pins the collector to the
+    # committed CSV seeds so the check never depends on an external exchange being
+    # reachable from CI (the default source is the live klines API).
+    offline = load_settings(overrides={"market_data": {"source": "csv"}})
+    engine = create_engine_from_settings(offline.database)
     factory = create_session_factory(engine)
     try:
         with session_scope(factory) as session:
             session.execute(text("delete from market.candles where source != 'verify'"))
-            first = build_collector(settings, session).run_once()
+            first = build_collector(offline, session).run_once()
         with session_scope(factory) as session:
-            second = build_collector(settings, session).run_once()
+            second = build_collector(offline, session).run_once()
         print(f"collector run 1   : inserted={first.inserted} fetched={first.fetched}")
         print(f"collector run 2   : inserted={second.inserted} fetched={second.fetched}")
         check("first pass inserts candles", first.inserted > 0, str(first.inserted))

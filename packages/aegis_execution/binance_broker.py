@@ -31,7 +31,7 @@ from urllib.parse import urlencode, urlparse
 import httpx
 from pydantic import SecretStr
 
-from aegis_core import Order, OrderStatus, OrderType, Side, utc_now
+from aegis_core import Order, OrderStatus, OrderType, utc_now
 from aegis_execution.broker import BrokerFill
 from aegis_execution.errors import (
     ExchangeAuthError,
@@ -76,11 +76,9 @@ def ensure_testnet_base_url(base_url: str, *, live_confirm: bool = False) -> str
             did not set ``AEGIS_LIVE_CONFIRM=true``.
     """
     host = (urlparse(base_url).hostname or "").lower()
-    if (
-        host == _TESTNET_SUFFIX
-        or host.endswith(f".{_TESTNET_SUFFIX}")
-        or host.startswith("testnet.")
-    ):
+    # Only ``testnet.binance.vision`` and its subdomains. A prefix check would accept
+    # lookalikes such as ``testnet.evil.com``, so compare the full host suffix.
+    if host == _TESTNET_SUFFIX or host.endswith(f".{_TESTNET_SUFFIX}"):
         return base_url
     if live_confirm:
         return base_url
@@ -130,6 +128,8 @@ class BinanceTestnetBroker:
                 "AEGIS_EXCHANGE__API_SECRET (testnet keys)"
             )
         self._base_url = ensure_testnet_base_url(base_url, live_confirm=live_confirm)
+        # An injected client stays the caller's to close; one created here is ours.
+        self._owns_client = client is None
         self._client = client or httpx.Client(base_url=self._base_url, timeout=timeout_seconds)
         self._timeout = timeout_seconds
         self._recv_window = recv_window
@@ -195,6 +195,11 @@ class BinanceTestnetBroker:
             },
         )
         return _state_from_payload(payload, fallback_id=exchange_order_id)
+
+    def close(self) -> None:
+        """Close the HTTP client, but only when this broker created it."""
+        if self._owns_client:
+            self._client.close()
 
     def ping(self) -> bool:
         """Cheap public probe used by the dashboard badge; never raises."""
@@ -294,8 +299,3 @@ def _state_from_payload(payload: dict[str, Any], *, fallback_id: str) -> Exchang
         filled_qty=filled,
         avg_price=avg_price,
     )
-
-
-def _side_of(payload: dict[str, Any]) -> Side | None:  # pragma: no cover - helper for callers
-    raw = str(payload.get("side", "")).upper()
-    return Side(raw) if raw in {"BUY", "SELL"} else None

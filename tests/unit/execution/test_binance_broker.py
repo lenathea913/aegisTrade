@@ -63,6 +63,26 @@ def test_mainnet_hosts_are_refused(url: str) -> None:
         ensure_testnet_base_url(url)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://testnet.evil.com",
+        "https://api.testnet.evil.com",
+        "https://testnet.binance.vision.evil.com",
+        "https://nottestnet.binance.vision",
+    ],
+)
+def test_lookalike_hosts_are_refused(url: str) -> None:
+    """A host that merely starts with ``testnet.`` is not a Binance testnet."""
+    with pytest.raises(NonTestnetEndpointError):
+        ensure_testnet_base_url(url)
+
+
+def test_testnet_subdomains_are_accepted() -> None:
+    url = "https://api.testnet.binance.vision"
+    assert ensure_testnet_base_url(url) == url
+
+
 def test_mainnet_needs_the_explicit_live_confirmation() -> None:
     assert ensure_testnet_base_url("https://api.binance.com", live_confirm=True)
 
@@ -182,6 +202,24 @@ def test_ping_never_raises() -> None:
         raise httpx.ConnectError("down")
 
     assert broker(handler).ping() is False
+
+
+def test_close_releases_a_client_the_broker_created() -> None:
+    instance = BinanceTestnetBroker(api_key=KEY, api_secret=SECRET)
+
+    instance.close()
+
+    assert instance._client.is_closed
+
+
+def test_close_leaves_an_injected_client_open() -> None:
+    injected = httpx.Client(base_url="https://testnet.binance.vision")
+    instance = BinanceTestnetBroker(api_key=KEY, api_secret=SECRET, client=injected)
+
+    instance.close()
+
+    assert injected.is_closed is False
+    injected.close()
 
 
 def test_scientific_notation_is_never_sent() -> None:

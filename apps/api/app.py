@@ -70,18 +70,24 @@ def _probe_exchange(settings: Settings) -> tuple[bool, str]:
         )
     except Exception as exc:
         return False, f"exchange not configured: {exc}"
-    if not broker.live:
-        return True, "paper broker: fills are simulated locally"
-    ping = getattr(broker, "ping", None)
-    if ping is None:
-        return True, "connected (this broker exposes no ping)"
+    close = getattr(broker, "close", None)
     try:
-        ok = bool(ping())
-    except Exception as exc:
-        return False, f"exchange ping failed: {exc}"
-    if ok:
-        return True, "testnet reachable"
-    return False, "testnet unreachable"
+        if not broker.live:
+            return True, "paper broker: fills are simulated locally"
+        ping = getattr(broker, "ping", None)
+        if ping is None:
+            return True, "connected (this broker exposes no ping)"
+        try:
+            ok = bool(ping())
+        except Exception as exc:
+            return False, f"exchange ping failed: {exc}"
+        if ok:
+            return True, "testnet reachable"
+        return False, "testnet unreachable"
+    finally:
+        # The badge is polled repeatedly: a client per probe would leak sockets.
+        if callable(close):
+            close()
 
 
 WEB_DIR = Path(__file__).parent

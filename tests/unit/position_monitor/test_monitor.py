@@ -196,3 +196,27 @@ def test_exit_intent_carries_the_full_position(price: str) -> None:
     assert action.intent.qty == Decimal("0.1")
     assert action.intent.strategy_id == "position_monitor"
     assert action.intent.stop_loss > action.intent.price  # type: ignore[operator]
+
+
+def test_live_price_uses_the_ledger_mark_when_enabled() -> None:
+    """``position_monitor.use_live_price`` acts on a pushed mark, not the last candle."""
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    ledger.mark_price("BTC/USDT", Decimal("28999"))
+    monitor = _monitor(pipeline, ledger, Quotes({"BTC/USDT": "30500"}), use_live_price=True)
+
+    actions = monitor.check()
+
+    assert len(actions) == 1
+    assert actions[0].trigger is ExitTrigger.STOP_LOSS
+    assert actions[0].closed is True
+
+
+def test_live_price_is_ignored_without_a_mark() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    monitor = _monitor(pipeline, ledger, Quotes({"BTC/USDT": "30500"}), use_live_price=True)
+
+    assert monitor.check() == ()

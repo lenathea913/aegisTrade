@@ -80,6 +80,7 @@ class PositionMonitor:
         clock: Callable[[], datetime] = utc_now,
         strategy_id: str = "position_monitor",
         protect_take_profit: bool = True,
+        use_live_price: bool = False,
     ) -> None:
         self._ledger = ledger
         self._pipeline = pipeline
@@ -87,6 +88,7 @@ class PositionMonitor:
         self._clock = clock
         self._strategy_id = strategy_id
         self._protect_take_profit = protect_take_profit
+        self._use_live_price = use_live_price
         self._logger = get_logger("aegis.position_monitor")
 
     @property
@@ -110,7 +112,7 @@ class PositionMonitor:
         if position.is_flat:
             return None
 
-        quote = self._quotes.latest(protection.symbol)
+        quote = self._quote(protection.symbol)
         if quote is None:
             self._logger.warning(
                 "monitor_no_quote", symbol=protection.symbol, reason="no candle stored"
@@ -151,6 +153,20 @@ class PositionMonitor:
             result=result,
             level=level,
         )
+
+    def _quote(self, symbol: str) -> MarketQuote | None:
+        """Latest price: the ledger's live mark when configured, else the last candle.
+
+        ``position_monitor.use_live_price`` is the paper-mode switch for acting on a
+        pushed mark-to-market price instead of waiting for the next closed candle. The
+        mark is only used when the ledger actually has one; otherwise the closed-candle
+        quote is the honest answer.
+        """
+        if self._use_live_price:
+            mark = self._ledger.mark(symbol)
+            if mark is not None:
+                return MarketQuote(symbol=symbol, price=mark, as_of=self._clock())
+        return self._quotes.latest(symbol)
 
     def _trigger(
         self, protection: PositionProtection, mark: Decimal

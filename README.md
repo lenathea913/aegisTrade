@@ -289,6 +289,39 @@ Alerting is a **stub**: `aegis_alerting` defines `Alert`, `Alerter`, `NullAlerte
 (disabled, the default) and `LoggingAlerter` (writes the alert to the structured
 log). No Telegram/Slack network call is made anywhere in the MVP.
 
+## Autonomous runner and API token
+
+FASE 12 adds the two things a "passive" platform lacks: a daemon that trades on a
+schedule, and a lock on the HTTP surface.
+
+**API token.** `AEGIS_API_TOKEN` protects every route except `/health` and `/metrics`:
+`/api/*`, the dashboard pages, the HTMX partials and the UI mutation routes. A browser
+can log in with HTTP Basic (any username, the token as the password) and the API sets
+an `aegis_token` cookie so HTMX keeps working; scripts send
+`Authorization: Bearer <token>`. An empty token is development mode: requests pass and
+the API logs `api_auth_disabled` at startup. There is no read/write split — a page that
+can convert a signal needs the token exactly like `POST /api/signals/{id}/convert`.
+
+**Runner.** `apps/trading_runner` runs two APScheduler jobs in one process: entries
+every `runner.signal_interval_seconds` (default 300 s) and protective exits every
+`runner.monitor_interval_seconds` (default 60 s). A cycle checks the kill switch,
+refuses stale candles, generates signals, converts the `RISK_OK` ones and sends the
+draft intent to `TradingPipeline`. It never builds an `ApprovedOrder` itself, and it
+refuses to start when `execution.mode` is `live` while `execution.allow_live_orders` is
+false.
+
+| Command | What it does |
+| --- | --- |
+| `make runner-once` | one entry scan + one monitor pass, JSON summary, then exit |
+| `make runner-start` | daemon on `configs/dev.yaml` |
+| `make runner-paper` | daemon on `configs/paper.yaml` |
+
+`position_monitor.use_live_price: true` makes the monitor act on the ledger's latest
+mark instead of waiting for a closed candle (default `false`, the paper-safe choice).
+Every tick writes its order, trade, position and audit rows in one transaction, so a
+protective exit appears in `trading.trades` and in `/journal` immediately.
+Details: [`docs/runbooks/autonomous-trading.md`](docs/runbooks/autonomous-trading.md).
+
 ## Infra stack
 
 One image (`infra/docker/Dockerfile`) runs every process; the command decides what
@@ -329,6 +362,8 @@ compose files ship development defaults only.
 - Secrets come from the environment only; nothing is written to logs or committed.
   `.env.example` contains placeholders.
 - No machine learning or price prediction in this phase.
+- The autonomous runner never approves its own orders: it produces a draft intent
+  and `TradingPipeline` runs `RiskGate` before any broker is constructed.
 - No withdrawal API is implemented, ever.
 - `live` mode stays inert until paper mode, ledger reconciliation and audit are proven.
 
@@ -340,7 +375,8 @@ compose files ship development defaults only.
   risk-gate authority, append-only audit, pessimistic backtests, paper-first
   execution, observability, config/secrets, protective exits
 - [`docs/runbooks/`](docs/runbooks/README.md) — kill switch, paper stack, migrations,
-  market-data outage, backup/restore, ledger reconciliation, rejection triage
+  market-data outage, backup/restore, ledger reconciliation, rejection triage,
+  autonomous trading runner
 
 ## License
 

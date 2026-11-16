@@ -65,3 +65,16 @@ observability:
   json_logs: true
   metrics_enabled: true
   metrics_port: 9101
+
+# API token: never put a real value here, set AEGIS_API_TOKEN in the environment.
+# Empty means development mode (open endpoints, warning logged at startup).
+api_token: ""
+
+runner:
+  signal_interval_seconds: 300   # one entry scan every 5 minutes
+  monitor_interval_seconds: 60   # stop/target check every minute
+  monitor_enabled: true
+
+position_monitor:
+  use_live_price: false   # paper: act on the last closed candle only
+  protect_take_profit: true

@@ -13,7 +13,7 @@ export PYTHONPATH := packages$(PY_SEP)apps
 .DEFAULT: help
 .PHONY: help install install-hooks dev paper test test-unit test-integration cov \
         cov-core lint fmt typecheck check migrate verify-db migration seed compose-dev compose-paper \
-        compose-down docker-build logs clean tree monitor-once monitor-run
+        compose-down docker-build logs clean tree monitor-once monitor-run \n        runner-once runner-start runner-paper
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -86,6 +86,15 @@ monitor-once: ## One position-monitor check (closes positions whose stop/target 
 
 monitor-run: ## Position monitor loop, 15s between checks (needs Postgres)
 	$(PY) -m position_monitor --interval 15
+
+runner-once: ## One autonomous runner pass: entry scan + protective exits (needs Postgres)
+	$(PY) -m trading_runner --once
+
+runner-start: ## Autonomous runner daemon: 5-min entries, 1-min stop/TP checks (dev config)
+	$(PY) -m trading_runner
+
+runner-paper: ## Autonomous runner daemon against configs/paper.yaml
+	AEGIS_ENVIRONMENT=paper $(PY) -m trading_runner
 
 docker-build: ## Build the single AegisTrade image
 	$(COMPOSE) -f infra/compose/docker-compose.dev.yml build api

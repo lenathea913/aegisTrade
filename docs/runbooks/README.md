@@ -13,6 +13,7 @@ do.
 | [backup-restore.md](backup-restore.md) | Before destructive work, and to recover |
 | [ledger-reconciliation.md](ledger-reconciliation.md) | Positions or equity look wrong after a restart |
 | [rejection-triage.md](rejection-triage.md) | Risk rejections need explaining |
+| [autonomous-trading.md](autonomous-trading.md) | Starting, stopping or watching the runner daemon |
 
 ## Principles
 

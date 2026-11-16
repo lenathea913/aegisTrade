@@ -69,7 +69,8 @@ ignore = [
 known-first-party = ["aegis_core", "aegis_strategy", "aegis_backtest", "aegis_risk",
                       "aegis_metrics", "aegis_db", "aegis_config", "aegis_observability",
                       "aegis_execution", "aegis_ledger", "aegis_alerting", "api",
-                      "market_collector", "position_monitor", "signal_service"]
+                      "market_collector", "position_monitor", "signal_service",
+                      "trading_runner"]
 
 # ---------------------------------------------------------------------------
 # mypy
@@ -98,6 +99,13 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 module = ["numpy", "numpy.*", "pandas", "pandas.*"]
 follow_imports = "skip"
+
+# APScheduler ships no type information; its objects are used through a thin
+# adapter in apps/trading_runner/cli.py, so skipping its analysis loses nothing.
+[[tool.mypy.overrides]]
+module = ["apscheduler", "apscheduler.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # pytest / coverage

@@ -35,7 +35,7 @@ from aegis_db import (
     session_scope,
 )
 from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
-from aegis_ledger import PortfolioLedger, PositionProtection
+from aegis_ledger import LedgerStore, LedgerWriter, PortfolioLedger, PositionProtection
 from aegis_risk import RiskGate
 from position_monitor.monitor import MonitorAction, PositionMonitor
 from position_monitor.quotes import CandleQuoteSource
@@ -101,16 +101,29 @@ def build_monitor(
     factory: sessionmaker[Session],
     *,
     ledger: PortfolioLedger | None = None,
+    writer: LedgerWriter | None = None,
 ) -> PositionMonitor:
-    """Wire a monitor from configuration (paper broker, real gate)."""
+    """Wire a monitor from configuration (paper broker, real gate, ledger writer).
+
+    ``writer`` is what makes a close land in ``trading.trades`` and
+    ``audit.audit_logs``: the caller passes a ``LedgerStore`` bound to the session
+    that wraps one check, so an exit commits together with its audit trail.
+    """
     book = ledger or PortfolioLedger(initial_equity=settings.risk.initial_equity)
     broker = build_broker(settings.execution)
     gateway = ExecutionGateway(broker, allow_live_orders=settings.execution.allow_live_orders)
-    pipeline = TradingPipeline(gate=RiskGate.from_settings(settings), gateway=gateway, ledger=book)
+    pipeline = TradingPipeline(
+        gate=RiskGate.from_settings(settings),
+        gateway=gateway,
+        ledger=book,
+        writer=writer,
+    )
     return PositionMonitor(
         ledger=book,
         pipeline=pipeline,
         quotes=CandleQuoteSource(factory),
+        use_live_price=settings.position_monitor.use_live_price,
+        protect_take_profit=settings.position_monitor.protect_take_profit,
     )
 
 
@@ -148,20 +161,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings = load_settings()
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)
-    monitor = build_monitor(settings, factory)
+    book = PortfolioLedger(initial_equity=settings.risk.initial_equity)
 
     try:
         if not args.no_restore:
-            positions = restore_from_database(monitor.ledger, factory)
+            positions = restore_from_database(book, factory)
             print(
                 f"position monitor: restored {len(positions)} open position(s)",
                 file=sys.stderr,
             )
+
+        # One session per check: the closing order, its trade, the position upsert
+        # and the audit rows commit together (see docs/runbooks/autonomous-trading.md).
+        def _run_once() -> None:
+            with session_scope(factory) as session:
+                monitor = build_monitor(settings, factory, ledger=book, writer=LedgerStore(session))
+                _check_once(monitor)
+
         if args.once:
-            _check_once(monitor)
+            _run_once()
         else:
             while True:
-                _check_once(monitor)
+                _run_once()
                 time.sleep(args.interval)
     except KeyboardInterrupt:
         print("position monitor stopped", file=sys.stderr)

@@ -43,6 +43,7 @@ from api.schemas import (
     SignalListResponse,
     SignalResponse,
 )
+from api.security import ApiTokenGuard, install_api_token_middleware
 from api.service import ApiService
 from signal_service import (
     SignalNotFoundError,
@@ -77,6 +78,9 @@ def create_app(
     configure_logging(settings.observability)
     logger = get_logger("aegis.api")
     metrics = metrics or Metrics()
+    guard = ApiTokenGuard(
+        None if settings.api_token is None else settings.api_token.get_secret_value()
+    )
 
     engine = None
     session_factory = None
@@ -106,6 +110,12 @@ def create_app(
             execution_mode=settings.execution.mode.value,
             metrics_enabled=settings.observability.metrics_enabled,
         )
+        if not guard.enabled:
+            # Development convenience, never a deployed default: say it loudly.
+            logger.warning(
+                "api_auth_disabled",
+                detail="AEGIS_API_TOKEN is empty; /api/* and the dashboard are open",
+            )
         if session_factory is not None:
             _restore_ledger(service, session_factory, logger)
         try:
@@ -120,6 +130,9 @@ def create_app(
     app.state.service = service
     app.state.metrics = metrics
     app.state.signals = signals
+    app.state.token_guard = guard
+
+    install_api_token_middleware(app, guard, logger)
 
     @app.middleware("http")
     async def count_requests(

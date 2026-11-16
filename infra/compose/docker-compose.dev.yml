@@ -24,6 +24,9 @@ x-app: &app
     AEGIS_OBSERVABILITY__LOG_LEVEL: INFO
     AEGIS_OBSERVABILITY__JSON_LOGS: "true"
     AEGIS_OBSERVABILITY__METRICS_ENABLED: "true"
+    # Empty = development mode (open endpoints, warning logged). CI sets a
+    # dummy value so the compose smoke test can prove 401s are enforced.
+    AEGIS_API_TOKEN: ${AEGIS_API_TOKEN:-}
 
 services:
   postgres:

@@ -33,8 +33,10 @@ __all__ = [
     "ExecutionSettings",
     "MarketDataSettings",
     "ObservabilitySettings",
+    "PositionMonitorSettings",
     "RedisSettings",
     "RiskSettings",
+    "RunnerSettings",
     "Settings",
 ]
 
@@ -226,6 +228,21 @@ class ObservabilitySettings(_Section):
     metrics_port: int = Field(default=9101, ge=1024, le=65535)
 
 
+class RunnerSettings(_Section):
+    """Cadence of the autonomous runner (see ``apps/trading_runner``)."""
+
+    signal_interval_seconds: int = Field(default=300, ge=5, le=86400)
+    monitor_interval_seconds: int = Field(default=60, ge=5, le=86400)
+    monitor_enabled: bool = True
+
+
+class PositionMonitorSettings(_Section):
+    """How the position monitor decides that a stop or target was touched."""
+
+    use_live_price: bool = False
+    protect_take_profit: bool = True
+
+
 class Settings(BaseSettings):
     """Root configuration object assembled from YAML + environment."""
 
@@ -249,6 +266,11 @@ class Settings(BaseSettings):
     exchange: ExchangeSettings = ExchangeSettings()
     alerting: AlertingSettings = AlertingSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
+    # Read from ``AEGIS_API_TOKEN``: an empty value means development mode (the
+    # application logs ``api_auth_disabled`` and serves everything without a token).
+    api_token: SecretStr | None = None
+    runner: RunnerSettings = RunnerSettings()
+    position_monitor: PositionMonitorSettings = PositionMonitorSettings()
 
     @classmethod
     def settings_customise_sources(
@@ -261,6 +283,18 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         # Environment must beat the YAML values passed in as init kwargs.
         return (env_settings, dotenv_settings, init_settings, file_secret_settings)
+
+    @field_validator("api_token", mode="before")
+    @classmethod
+    def _blank_token_is_unset(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @property
+    def api_token_required(self) -> bool:
+        """True when a token is configured and the HTTP surface must demand it."""
+        return self.api_token is not None
 
     @model_validator(mode="after")
     def _live_requires_credentials(self) -> Self:

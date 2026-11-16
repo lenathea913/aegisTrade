@@ -21,6 +21,7 @@ from decimal import Decimal
 from aegis_config import Settings
 from aegis_core import Trade, __version__, utc_now
 from aegis_ledger import AuditEvent, PortfolioLedger
+from api.formatting import price, qty
 from api.repository import ApiRepository
 from api.schemas import (
     ExchangeStatusResponse,
@@ -215,7 +216,8 @@ def _trade_entry(trade: Trade) -> JournalEntryResponse:
     return JournalEntryResponse(
         kind="trade",
         at=trade.filled_at,
-        title=f"{trade.side.value} {trade.qty} {trade.symbol} @ {trade.price}",
+        # Formatted here as well as in the template: the title is text, not a number.
+        title=f"{trade.side.value} {qty(trade.qty)} {trade.symbol} @ {price(trade.price)}",
         detail={
             "trade_id": trade.trade_id,
             "order_id": trade.order_id,

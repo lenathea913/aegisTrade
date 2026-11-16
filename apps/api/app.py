@@ -35,6 +35,7 @@ from aegis_ledger import LedgerError, PortfolioLedger
 from aegis_observability import CONTENT_TYPE_LATEST, Metrics, configure_logging, get_logger
 from aegis_risk import RiskGate
 from api.exchange import cancel_order, open_orders
+from api.formatting import clean_payload, money, price, qty
 from api.repository import SqlTradingRepository
 from api.schemas import (
     CancelOrderResponse,
@@ -103,6 +104,10 @@ def _wants_html(request: Request) -> bool:
 
 
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+# Rounding lives in `api.formatting`: the templates never print a raw Decimal.
+TEMPLATES.env.filters.update(
+    {"money": money, "price": price, "qty": qty, "clean_payload": clean_payload}
+)
 
 
 def create_app(

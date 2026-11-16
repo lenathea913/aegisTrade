@@ -27,10 +27,8 @@ class EmaCrossParams(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # TODO: revert to 12/26 after testing. Lowered to 3/5 so a quiet market still
-    # produces crosses for an end-to-end run (signal -> risk -> paper -> Telegram).
-    fast_period: int = Field(default=3, ge=2, le=200)
-    slow_period: int = Field(default=5, ge=3, le=500)
+    fast_period: int = Field(default=12, ge=2, le=200)
+    slow_period: int = Field(default=26, ge=3, le=500)
     qty: PositiveDecimal = Decimal("0.1")
     stop_loss_pct: Decimal = Field(default=Decimal("2"), gt=0, lt=100)
     take_profit_pct: Decimal = Field(default=Decimal("4"), gt=0, le=1000)

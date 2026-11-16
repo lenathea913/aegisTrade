@@ -128,6 +128,22 @@ def build_runner(price: str = "32500", **kwargs: Any) -> tuple[TradingRunner, Po
     return runner, ledger
 
 
+def test_an_open_position_is_never_pyramided() -> None:
+    """The same cross must not stack a second entry on top of an open position."""
+    runner, ledger = build_runner()
+
+    first = runner.run_entry_cycle()
+    assert first.filled == (SYMBOL,)
+    qty_after_first = ledger.position(SYMBOL).qty
+    assert qty_after_first > 0
+
+    second = runner.run_entry_cycle()
+
+    assert second.converted == ()
+    assert second.filled == ()
+    assert ledger.position(SYMBOL).qty == qty_after_first
+
+
 def test_fresh_risk_ok_signal_is_converted_and_filled() -> None:
     runner, ledger = build_runner()
 

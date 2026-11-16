@@ -6,10 +6,10 @@
 </div>
 
 <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Entry ref</dt><dd class="font-mono">{{ selected.entry_ref }}</dd></div>
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Stop</dt><dd class="font-mono">{{ selected.stop_loss }}</dd></div>
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Take profit</dt><dd class="font-mono">{{ selected.take_profit }}</dd></div>
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Risk / reward</dt><dd class="font-mono">{{ selected.risk_reward }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Entry ref</dt><dd class="font-mono">{{ selected.entry_ref | price }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Stop</dt><dd class="font-mono">{{ selected.stop_loss | price }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Take profit</dt><dd class="font-mono">{{ selected.take_profit | price }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Risk / reward</dt><dd class="font-mono">{{ selected.risk_reward | money }}</dd></div>
   <div><dt class="text-xs uppercase tracking-wide text-slate-500">Strategy</dt><dd>{{ selected.strategy_id }} v{{ selected.strategy_version }}</dd></div>
   <div><dt class="text-xs uppercase tracking-wide text-slate-500">Expires</dt><dd class="font-mono text-xs">{{ selected.expires_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</dd></div>
 </dl>
@@ -19,7 +19,7 @@
   {% if preview %}
     <p class="mt-1 text-sm {{ 'text-emerald-300' if preview.approved else 'text-rose-300' }}">
       {{ "would be approved" if preview.approved else "would be rejected" }}
-      {% if preview.approved %}· max risk {{ preview.max_risk_amount }}{% endif %}
+      {% if preview.approved %}· max risk {{ preview.max_risk_amount | money }}{% endif %}
     </p>
     <ul class="mt-2 space-y-1 text-xs text-slate-400">
       {% for reason in preview.reasons %}<li class="font-mono">{{ reason }}</li>{% endfor %}
@@ -65,12 +65,12 @@
 <div class="mt-4 rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
   <h3 class="text-xs uppercase tracking-wide text-emerald-300">Draft intent — not executed</h3>
   <p class="mt-1 font-mono text-xs text-slate-300">
-    {{ conversion.intent.side }} {{ conversion.intent.qty }} {{ conversion.intent.symbol }}
-    @ {{ conversion.intent.price }} · stop {{ conversion.intent.stop_loss }} · target
-    {{ conversion.intent.take_profit }}
+    {{ conversion.intent.side }} {{ conversion.intent.qty | qty }} {{ conversion.intent.symbol }}
+    @ {{ conversion.intent.price | price }} · stop {{ conversion.intent.stop_loss | price }} · target
+    {{ conversion.intent.take_profit | price }}
   </p>
   <p class="mt-2 text-xs text-slate-400">
-    max risk {{ conversion.decision.max_risk_amount }} · checks:
+    max risk {{ conversion.decision.max_risk_amount | money }} · checks:
     {{ conversion.decision.reasons | join(", ") }}
   </p>
   <p class="mt-2 text-xs text-slate-500">

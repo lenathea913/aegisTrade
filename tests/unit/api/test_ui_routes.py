@@ -9,7 +9,15 @@ from decimal import Decimal
 from fastapi.testclient import TestClient
 
 from aegis_config import load_settings
-from aegis_core import TRADER_MOTIVATION_QUOTE, Candle, RiskLimit, SignalStatus, Timeframe, Trade
+from aegis_core import (
+    TRADER_MOTIVATION_QUOTE,
+    Candle,
+    RiskLimit,
+    Side,
+    SignalStatus,
+    Timeframe,
+    Trade,
+)
 from aegis_ledger import AuditEvent, PortfolioLedger
 from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
@@ -208,6 +216,41 @@ def test_ui_convert_swaps_in_a_draft_and_shows_rejection() -> None:
     again = client.post(f"/ui/signals/{signal_id}/convert")
     assert again.status_code == 200
     assert "already converted" in again.text
+
+
+def test_journal_page_rounds_money_instead_of_printing_raw_decimals() -> None:
+    """The regression from the first paper run: 0.03065... must render as 0.03."""
+    trade = Trade(
+        order_id="ord-1",
+        symbol=SYMBOL,
+        side=Side.BUY,
+        qty=Decimal("0.030000000000000001"),
+        price=Decimal("30015.000000000004"),
+        fee=Decimal("0.0045022500000000002"),
+        filled_at=NOW,
+        strategy_id="simple_ema_cross",
+    )
+
+    class JournalRepository(EmptyRepository):
+        def trades(self, limit: int) -> Sequence[Trade]:
+            return [trade]
+
+    settings = load_settings("paper")
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    service = ApiService(
+        settings=settings,
+        repository=JournalRepository(),
+        ledger=ledger,
+        clock=lambda: NOW,
+    )
+    client = TestClient(create_app(settings=settings, service=service))
+
+    body = client.get("/journal", headers={"accept": "text/html"}).text
+
+    assert "BUY 0.03 BTC/USDT @ 30015.0000" in body
+    assert '"fee": "0.004502"' in body
+    assert "0.0045022500000000002" not in body
+    assert "0.030000000000000001" not in body
 
 
 def test_ui_ignore_marks_the_signal() -> None:

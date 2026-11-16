@@ -32,6 +32,7 @@ from aegis_alerting import Alerter
 from aegis_config import ExecutionMode, Settings
 from aegis_core import (
     MarketContext,
+    Side,
     Signal,
     SignalStatus,
     Timeframe,
@@ -145,7 +146,7 @@ class TradingRunner:
         if not fresh:
             self._logger.warning(
                 "runner_no_fresh_data",
-                reason="no symbol has a candle inside market_data.stale_after_seconds",
+                reason="no symbol has a candle inside the configured freshness window",
             )
             return RunnerCycle(skipped="stale_market_data")
 
@@ -178,14 +179,39 @@ class TradingRunner:
         )
 
     def _candidates(self, fresh: set[str], now: datetime) -> tuple[Signal, ...]:
-        """Signals the runner may act on: ``RISK_OK``, unexpired, on fresh data."""
-        return tuple(
-            signal
-            for signal in self._signals.list_signals()
-            if signal.status is SignalStatus.RISK_OK
-            and not signal.is_expired(now)
-            and signal.symbol in fresh
-        )
+        """Signals the runner may act on: ``RISK_OK``, unexpired, on fresh data.
+
+        A symbol that already holds a position in the signal's direction is skipped:
+        the demo strategy re-signals the same cross on the next cycle, and acting on it
+        again would pyramid one idea into a larger position. A position only grows
+        after it has been closed (the stop/target monitor does that), never by stacking
+        entries. An opposite-side signal is still allowed, because it reduces exposure.
+        """
+        candidates: list[Signal] = []
+        for signal in self._signals.list_signals():
+            if signal.status is not SignalStatus.RISK_OK:
+                continue
+            if signal.is_expired(now) or signal.symbol not in fresh:
+                continue
+            if self._holds_direction(signal.symbol, signal.direction.side):
+                self._logger.info(
+                    "runner_position_open",
+                    symbol=signal.symbol,
+                    signal_id=signal.signal_id,
+                    side=signal.direction.side.value,
+                    reason="position already open in this direction; no pyramiding",
+                )
+                continue
+            candidates.append(signal)
+        return tuple(candidates)
+
+    def _holds_direction(self, symbol: str, side: Side) -> bool:
+        """True when ``symbol`` already has a non-flat position on ``side``."""
+        position = self._ledger.position(symbol)
+        if position.is_flat:
+            return False
+        held = Side.BUY if position.qty > 0 else Side.SELL
+        return held is side
 
     def _trade(self, signal: Signal, now: datetime) -> Any | None:
         """Convert one signal and hand its draft intent to the pipeline."""

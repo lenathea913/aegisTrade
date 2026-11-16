@@ -13,23 +13,23 @@
 
   <div class="rounded border border-slate-800 bg-slate-900/60 p-4">
     <p class="text-xs uppercase tracking-wide text-slate-500">Equity</p>
-    <p class="mt-2 font-mono text-2xl">{{ budget.equity }}</p>
-    <p class="mt-2 text-xs text-slate-400">risk / trade: {{ budget.risk_per_trade_capacity }}</p>
+    <p class="mt-2 font-mono text-2xl">{{ budget.equity | money }}</p>
+    <p class="mt-2 text-xs text-slate-400">risk / trade: {{ budget.risk_per_trade_capacity | money }}</p>
   </div>
 
   <div class="rounded border border-slate-800 bg-slate-900/60 p-4">
     <p class="text-xs uppercase tracking-wide text-slate-500">Exposure</p>
-    <p class="mt-2 font-mono text-2xl">{{ budget.total_exposure }}</p>
+    <p class="mt-2 font-mono text-2xl">{{ budget.total_exposure | money }}</p>
     <p class="mt-2 text-xs text-slate-400">
-      {{ budget.total_exposure_pct }} % of equity · leverage {{ budget.leverage }}
+      {{ budget.total_exposure_pct | money }} % of equity · leverage {{ budget.leverage | money }}
     </p>
   </div>
 
   <div class="rounded border border-slate-800 bg-slate-900/60 p-4">
     <p class="text-xs uppercase tracking-wide text-slate-500">PnL (realized)</p>
-    <p class="mt-2 font-mono text-2xl">{{ budget.daily_realized_pnl }}</p>
+    <p class="mt-2 font-mono text-2xl">{{ budget.daily_realized_pnl | money }}</p>
     <p class="mt-2 text-xs text-slate-400">
-      today · week {{ budget.weekly_realized_pnl }}
+      today · week {{ budget.weekly_realized_pnl | money }}
     </p>
   </div>
 </div>
@@ -37,12 +37,12 @@
 <div class="mt-4 grid gap-4 sm:grid-cols-2">
   <div class="rounded border border-slate-800 bg-slate-900/60 p-4">
     <p class="text-xs uppercase tracking-wide text-slate-500">Daily loss budget</p>
-    <p class="mt-2 font-mono text-lg">{{ budget.daily_loss_remaining }} left</p>
-    <p class="mt-1 text-xs text-slate-400">limit {{ budget.daily_loss_limit }}</p>
+    <p class="mt-2 font-mono text-lg">{{ budget.daily_loss_remaining | money }} left</p>
+    <p class="mt-1 text-xs text-slate-400">limit {{ budget.daily_loss_limit | money }}</p>
   </div>
   <div class="rounded border border-slate-800 bg-slate-900/60 p-4">
     <p class="text-xs uppercase tracking-wide text-slate-500">Weekly loss budget</p>
-    <p class="mt-2 font-mono text-lg">{{ budget.weekly_loss_remaining }} left</p>
-    <p class="mt-1 text-xs text-slate-400">limit {{ budget.weekly_loss_limit }}</p>
+    <p class="mt-2 font-mono text-lg">{{ budget.weekly_loss_remaining | money }} left</p>
+    <p class="mt-1 text-xs text-slate-400">limit {{ budget.weekly_loss_limit | money }}</p>
   </div>
 </div>

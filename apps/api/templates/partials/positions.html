@@ -25,13 +25,14 @@
             {{ position.side }}
           </span>
         </td>
-        <td class="px-4 py-2 font-mono">{{ position.qty }}</td>
-        <td class="px-4 py-2 font-mono">{{ position.avg_entry }}</td>
-        <td class="px-4 py-2 font-mono">{{ position.notional }}</td>
-        <td class="px-4 py-2 font-mono {{ 'text-emerald-300' if position.unrealized_pnl.startswith('-') == false else 'text-rose-300' }}">
-          {{ position.unrealized_pnl }}
+        <td class="px-4 py-2 font-mono">{{ position.qty | qty }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.avg_entry | price }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.notional | money }}</td>
+        {% set unrealized = position.unrealized_pnl | money %}
+        <td class="px-4 py-2 font-mono {{ 'text-rose-300' if unrealized.startswith('-') else 'text-emerald-300' }}">
+          {{ unrealized }}
         </td>
-        <td class="px-4 py-2 font-mono">{{ position.realized_pnl }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.realized_pnl | money }}</td>
       </tr>
       {% endfor %}
     </tbody>

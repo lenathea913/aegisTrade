@@ -30,8 +30,8 @@ class LatestCandleSource(Protocol):
 class SqlLatestCandleSource:
     """Reads the newest row through ``SqlCandleRepository`` (one short session)."""
 
-    def __init__(self, factory: sessionmaker[Session]) -> None:
-        self._candles = SqlCandleRepository(factory)
+    def __init__(self, factory: sessionmaker[Session], environment: str = "testnet") -> None:
+        self._candles = SqlCandleRepository(factory, environment=environment)
 
     def latest(self, symbol: str, timeframe: Timeframe) -> Candle | None:
         rows = self._candles.recent(symbol, timeframe, 1)

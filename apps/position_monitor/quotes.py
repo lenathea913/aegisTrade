@@ -81,22 +81,26 @@ def live_quote_source(settings: Any, factory: sessionmaker[Session]) -> QuoteSou
     return MarkStoreQuoteSource(
         store,
         max_age_seconds=settings.streaming.mark_ttl_seconds,
-        fallback=CandleQuoteSource(factory),
+        fallback=CandleQuoteSource(factory, environment=settings.exchange.environment),
     )
 
 
 class CandleQuoteSource:
-    """Reads the newest stored candle for a symbol."""
+    """Reads the newest stored candle for a symbol, from one venue only."""
 
-    def __init__(self, factory: sessionmaker[Session]) -> None:
+    def __init__(self, factory: sessionmaker[Session], environment: str = "testnet") -> None:
         self._factory = factory
+        self._environment = environment
 
     def latest(self, symbol: str) -> MarketQuote | None:
         with session_scope(self._factory) as session:
             row = (
                 session.execute(
                     select(CandleRow)
-                    .where(CandleRow.symbol == symbol)
+                    .where(
+                        CandleRow.environment == self._environment,
+                        CandleRow.symbol == symbol,
+                    )
                     .order_by(CandleRow.close_time.desc())
                     .limit(1)
                 )

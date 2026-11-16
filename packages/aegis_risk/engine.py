@@ -38,6 +38,7 @@ from aegis_core import (
     RiskLimit,
     Side,
     StrictModel,
+    Timeframe,
 )
 from aegis_risk.reasons import RejectReason, RiskCheck
 
@@ -254,7 +255,7 @@ class RiskGate(StrictModel):
 
     limits: RiskLimit
     kill_switch: bool = False
-    stale_after_seconds: int = Field(default=DEFAULT_STALE_AFTER_SECONDS, ge=1, le=3600)
+    stale_after_seconds: int = Field(default=DEFAULT_STALE_AFTER_SECONDS, ge=1, le=86400)
 
     def evaluate(
         self,
@@ -288,10 +289,16 @@ class RiskGate(StrictModel):
         return decision
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> RiskGate:
-        """Build the gate from validated configuration."""
+    def from_settings(cls, settings: Settings, timeframe: Timeframe | None = None) -> RiskGate:
+        """Build the gate from validated configuration.
+
+        The freshness window follows the traded timeframe unless
+        ``market_data.stale_after_seconds`` pins it: a bar that is exactly one hour long
+        must not be judged stale the second it closes.
+        """
+        bar = timeframe or settings.market_data.timeframes[0]
         return cls(
             limits=settings.risk.limits,
             kill_switch=settings.risk.kill_switch,
-            stale_after_seconds=settings.market_data.stale_after_seconds,
+            stale_after_seconds=settings.market_data.stale_after_for(bar),
         )

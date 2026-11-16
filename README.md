@@ -170,20 +170,26 @@ installs a trigger that rejects `UPDATE`, `DELETE` and `TRUNCATE`.
 
 `apps/market_collector` is the only writer of `market.candles`. One pass fetches the
 latest closed bars for every configured symbol/timeframe and inserts them with
-`ON CONFLICT (symbol, timeframe, open_time) DO NOTHING`, so re-runs, overlapping
-windows and restarts can never duplicate or rewrite a bar.
+`ON CONFLICT (environment, symbol, timeframe, open_time) DO NOTHING`, so re-runs,
+overlapping windows and restarts can never duplicate or rewrite a bar. The
+`environment` column (`testnet`/`mainnet`) is part of that key: testnet prices can
+never be read back as mainnet history. `make clean-db` empties the table so a fresh
+collector pass refills it from a single venue.
 
 ```bash
 make collector-once   # one pass, then exit
 make collector-run    # loop every 60s (Ctrl-C to stop)
 ```
 
-Data sources (`market_data.source` in the YAML):
+Data sources (`market_data.source` in the YAML, env `AEGIS_MARKET_DATA__SOURCE`):
 
-- `csv` — paper/dev. Reads `data/seeds/<BASE>_<timeframe>.csv`, so the pipeline runs
-  offline with no keys and no network.
-- `exchange` — public Binance spot klines (`/api/v3/klines`). Read-only market data;
-  no API key, no order endpoints, nothing that can trade.
+- `binance` (the default) and `exchange` — public Binance spot klines
+  (`/api/v3/klines`). Read-only market data; no API key, no order endpoints, nothing
+  that can trade. The host follows `exchange.testnet`: `testnet.binance.vision` while
+  true, `api.binance.com` when false.
+- `csv` — offline seeds in `data/seeds/<BASE>_<timeframe>.csv`, for deterministic
+  backtests and CI. Not the default any more: paper mode rehearses the live feed.
+- Any other value fails at startup instead of silently falling back to CSV.
 
 Each request is wrapped in bounded exponential backoff
 (`market_data.max_retries`, 1s → 2s → 4s … capped at 60s). A failing

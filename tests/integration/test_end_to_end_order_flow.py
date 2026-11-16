@@ -108,7 +108,9 @@ def build_pipeline(
     gate = RiskGate(
         limits=settings.risk.limits,
         kill_switch=kill_switch,
-        stale_after_seconds=settings.market_data.stale_after_seconds,
+        stale_after_seconds=settings.market_data.stale_after_for(
+            settings.market_data.timeframes[0]
+        ),
     )
     return TradingPipeline(
         gate=gate,

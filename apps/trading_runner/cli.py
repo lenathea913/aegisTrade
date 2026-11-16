@@ -101,7 +101,7 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
     signals = SignalService(
         gate=RiskGate.from_settings(settings),
         ledger=ledger,
-        candles=SqlCandleRepository(factory),
+        candles=SqlCandleRepository(factory, environment=settings.exchange.environment),
         symbols=settings.market_data.symbols,
         timeframe=settings.market_data.timeframes[0],
     )
@@ -109,8 +109,8 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         settings=settings,
         ledger=ledger,
         signals=signals,
-        candles=SqlLatestCandleSource(factory),
-        quotes=CandleQuoteSource(factory),
+        candles=SqlLatestCandleSource(factory, environment=settings.exchange.environment),
+        quotes=CandleQuoteSource(factory, environment=settings.exchange.environment),
         writer_factory=lambda: _writer(factory),
         live_quotes=live_quote_source(settings, factory),
         alerter=build_alerter(settings.alerting),

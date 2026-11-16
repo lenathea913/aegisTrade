@@ -243,7 +243,8 @@ class TradingRunner:
 
     def _fresh_symbols(self, now: datetime) -> set[str]:
         """Symbols whose newest candle is inside the configured staleness window."""
-        window = timedelta(seconds=self._settings.market_data.stale_after_seconds)
+        stale_after_seconds = self._settings.market_data.stale_after_for(self._timeframe)
+        window = timedelta(seconds=stale_after_seconds)
         fresh: set[str] = set()
         for symbol in self._settings.market_data.symbols:
             candle = self._candles.latest(symbol, self._timeframe)
@@ -256,7 +257,7 @@ class TradingRunner:
                     "runner_candle_stale",
                     symbol=symbol,
                     age_seconds=round(age.total_seconds(), 1),
-                    stale_after_seconds=self._settings.market_data.stale_after_seconds,
+                    stale_after_seconds=stale_after_seconds,
                 )
                 continue
             fresh.add(symbol)
@@ -304,7 +305,7 @@ class TradingRunner:
             allow_live_orders=self._settings.execution.allow_live_orders,
         )
         return TradingPipeline(
-            gate=RiskGate.from_settings(self._settings),
+            gate=RiskGate.from_settings(self._settings, self._timeframe),
             gateway=gateway,
             ledger=self._ledger,
             writer=writer,

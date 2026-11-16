@@ -70,36 +70,47 @@ class RecordingSession:
         return _Result(self.returned)
 
 
-def test_rows_carry_exchange_source_and_domain_values() -> None:
-    rows = candle_rows([make_candle()], exchange="binance", source="csv")
+def test_rows_carry_exchange_environment_source_and_domain_values() -> None:
+    rows = candle_rows([make_candle()], exchange="binance", source="binance", environment="testnet")
 
     assert rows[0]["exchange"] == "binance"
-    assert rows[0]["source"] == "csv"
+    assert rows[0]["environment"] == "testnet"
+    assert rows[0]["source"] == "binance"
     assert rows[0]["timeframe"] == "1h"
     assert rows[0]["trades"] == 7
 
 
 def test_duplicate_bars_in_one_batch_are_collapsed() -> None:
     rows = candle_rows(
-        [make_candle(0), make_candle(0), make_candle(1)], exchange="binance", source="csv"
+        [make_candle(0), make_candle(0), make_candle(1)],
+        exchange="binance",
+        source="csv",
+        environment="testnet",
     )
 
     assert len(rows) == 2
 
 
 def test_upsert_uses_the_natural_key_and_do_nothing() -> None:
-    statement = build_upsert([make_candle()], exchange="binance", source="csv")
+    statement = build_upsert(
+        [make_candle()], exchange="binance", source="binance", environment="testnet"
+    )
     sql = str(statement.compile(dialect=postgres_dialect()))
 
     assert "INSERT INTO market.candles" in sql
-    assert "ON CONFLICT (symbol, timeframe, open_time) DO NOTHING" in sql
+    assert "ON CONFLICT (environment, symbol, timeframe, open_time) DO NOTHING" in sql
 
 
 def test_upsert_counts_rows_returned_by_the_statement() -> None:
     session = RecordingSession(returned=2)
     store = CandleStore(cast(Session, session))
 
-    inserted = store.upsert([make_candle(0), make_candle(1)], exchange="binance", source="csv")
+    inserted = store.upsert(
+        [make_candle(0), make_candle(1)],
+        exchange="binance",
+        source="csv",
+        environment="testnet",
+    )
 
     assert inserted == 2
     assert len(session.statements) == 1
@@ -109,7 +120,9 @@ def test_upsert_counts_rows_returned_by_the_statement() -> None:
 def test_upsert_runs_inside_a_savepoint() -> None:
     session = RecordingSession(returned=1)
 
-    CandleStore(cast(Session, session)).upsert([make_candle()], exchange="binance", source="csv")
+    CandleStore(cast(Session, session)).upsert(
+        [make_candle()], exchange="binance", source="csv", environment="testnet"
+    )
 
     assert session.savepoints == 1
 
@@ -118,7 +131,7 @@ def test_empty_batch_skips_the_database() -> None:
     session = RecordingSession()
     store = CandleStore(cast(Session, session))
 
-    assert store.upsert([], exchange="binance", source="csv") == 0
+    assert store.upsert([], exchange="binance", source="csv", environment="testnet") == 0
     assert session.statements == []
 
 
@@ -127,7 +140,7 @@ def test_conflicting_batch_inserts_nothing_and_counts_zero() -> None:
     session = RecordingSession(returned=0)
 
     inserted = CandleStore(cast(Session, session)).upsert(
-        [make_candle()], exchange="binance", source="csv"
+        [make_candle()], exchange="binance", source="csv", environment="testnet"
     )
 
     assert inserted == 0

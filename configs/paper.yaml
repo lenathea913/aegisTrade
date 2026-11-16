@@ -6,9 +6,10 @@ execution:
   broker: paper
   allow_live_orders: false
 
+# Live testnet klines by default: paper mode exists to rehearse the real feed.
+# The freshness window is derived per timeframe (1h -> 3720 s), not pinned here.
 market_data:
-  source: csv
-  stale_after_seconds: 120
+  source: binance
 
 risk:
   kill_switch: false

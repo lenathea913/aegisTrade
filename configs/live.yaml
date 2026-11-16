@@ -16,8 +16,8 @@ exchange:
   testnet: false
 
 market_data:
-  source: exchange
-  stale_after_seconds: 30
+  # Live klines from the mainnet host (exchange.testnet: false selects api.binance.com).
+  source: binance
 
 risk:
   kill_switch: false

@@ -49,7 +49,9 @@ def test_gate_takes_limits_and_staleness_from_settings(
     gate = RiskGate.from_settings(settings)
 
     assert gate.limits == settings.risk.limits
-    assert gate.stale_after_seconds == settings.market_data.stale_after_seconds
+    assert gate.stale_after_seconds == settings.market_data.stale_after_for(
+        settings.market_data.timeframes[0]
+    )
 
     # paper config allows only BTC/USDT, so an ETH intent is refused by the gate.
     eth = small_intent.model_copy(update={"symbol": "ETH/USDT"})

@@ -137,7 +137,7 @@ def create_app(
         signals = SignalService(
             gate=RiskGate.from_settings(settings),
             ledger=service.ledger,
-            candles=SqlCandleRepository(session_factory),
+            candles=SqlCandleRepository(session_factory, environment=settings.exchange.environment),
             symbols=settings.market_data.symbols,
             timeframe=settings.market_data.timeframes[0],
         )

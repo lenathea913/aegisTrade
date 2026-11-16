@@ -42,6 +42,23 @@ class Timeframe(StrEnum):
     H4 = "4h"
     D1 = "1d"
 
+    @property
+    def duration_seconds(self) -> int:
+        """Bar length in seconds; the basis of the derived freshness window."""
+        return _TIMEFRAME_SECONDS[self]
+
+
+#: Bar length per timeframe. Kept next to the enum so a new timeframe cannot be added
+#: without deciding how long one of its bars lasts.
+_TIMEFRAME_SECONDS: dict[Timeframe, int] = {
+    Timeframe.M1: 60,
+    Timeframe.M5: 300,
+    Timeframe.M15: 900,
+    Timeframe.H1: 3600,
+    Timeframe.H4: 14400,
+    Timeframe.D1: 86400,
+}
+
 
 class OrderStatus(StrEnum):
     """Lifecycle of a submitted order."""

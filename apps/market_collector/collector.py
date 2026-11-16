@@ -74,6 +74,7 @@ class MarketCollector:
         symbols: Sequence[str],
         timeframes: Sequence[Timeframe],
         exchange: str = "binance",
+        environment: str = "testnet",
         limit: int = DEFAULT_LIMIT,
         retry: RetryPolicy | None = None,
         now: Callable[[], datetime] = utc_now,
@@ -87,6 +88,7 @@ class MarketCollector:
         self._symbols = tuple(symbols)
         self._timeframes = tuple(timeframes)
         self._exchange = exchange
+        self._environment = environment
         self._limit = limit
         self._retry = retry or RetryPolicy()
         self._now = now
@@ -120,7 +122,10 @@ class MarketCollector:
 
         try:
             inserted = self._store.upsert(
-                candles, exchange=self._exchange, source=self._source.label
+                candles,
+                exchange=self._exchange,
+                source=self._source.label,
+                environment=self._environment,
             )
         except Exception as exc:
             return SeriesResult(

@@ -42,19 +42,20 @@ class FakeEngine:
         self.disposed = True
 
 
-def test_paper_settings_select_the_csv_source() -> None:
+def test_paper_settings_select_the_live_source() -> None:
+    """Paper mode rehearses the live feed: CSV is an opt-in, not the default."""
     settings = load_settings("paper")
 
     source = build_source_for(settings)
 
-    assert isinstance(source, CsvCandleSource)
-    assert Path(source.data_dir) == Path("data/seeds")
+    assert isinstance(source, BinanceKlineSource)
+    assert klines_base_url(settings) == BINANCE_TESTNET_BASE_URL
 
 
-def test_dev_settings_select_the_csv_source_with_debug_configuration() -> None:
+def test_dev_settings_also_use_the_live_source() -> None:
     settings = load_settings("dev")
 
-    assert isinstance(build_source_for(settings), CsvCandleSource)
+    assert isinstance(build_source_for(settings), BinanceKlineSource)
     assert settings.market_data.timeframes == (Timeframe.H1,)
 
 
@@ -63,7 +64,16 @@ def test_collector_is_built_from_settings() -> None:
 
     collector = build_collector(settings, cast(Session, object()))
 
-    assert collector.source_kind == "CsvCandleSource"
+    assert collector.source_kind == "BinanceKlineSource"
+
+
+def test_csv_remains_an_explicit_choice() -> None:
+    settings = load_settings("paper", overrides={"market_data": {"source": "csv"}})
+
+    source = build_source_for(settings)
+
+    assert isinstance(source, CsvCandleSource)
+    assert Path(source.data_dir) == Path("data/seeds")
 
 
 def test_source_binance_selects_the_live_klines_source() -> None:

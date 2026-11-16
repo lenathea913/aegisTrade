@@ -27,17 +27,28 @@ class CandleRepository(Protocol):
 
 
 class SqlCandleRepository:
-    """Reads ``market.candles``; one short session per call."""
+    """Reads one venue's ``market.candles`` series; one short session per call.
 
-    def __init__(self, factory: sessionmaker[Session]) -> None:
+    ``environment`` defaults to ``testnet`` because that is the only venue this project
+    is allowed to trade today. Callers that hold settings pass
+    ``settings.exchange.environment`` explicitly, so a mainnet run never reads testnet
+    bars out of the same table.
+    """
+
+    def __init__(self, factory: sessionmaker[Session], environment: str = "testnet") -> None:
         self._factory = factory
+        self._environment = environment
 
     def recent(self, symbol: str, timeframe: Timeframe, limit: int) -> Sequence[Candle]:
         with session_scope(self._factory) as session:
             rows = (
                 session.execute(
                     select(CandleRow)
-                    .where(CandleRow.symbol == symbol, CandleRow.timeframe == timeframe.value)
+                    .where(
+                        CandleRow.environment == self._environment,
+                        CandleRow.symbol == symbol,
+                        CandleRow.timeframe == timeframe.value,
+                    )
                     .order_by(CandleRow.open_time.desc())
                     .limit(limit)
                 )

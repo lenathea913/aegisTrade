@@ -12,7 +12,7 @@ export PYTHONPATH := packages$(PY_SEP)apps
 
 .DEFAULT: help
 .PHONY: help install install-hooks dev paper test test-unit test-integration cov \
-        cov-core lint fmt typecheck check migrate verify-db migration seed compose-dev compose-paper \
+        cov-core lint fmt typecheck check migrate verify-db migration seed clean-db compose-dev compose-paper \
         compose-down docker-build logs clean tree monitor-once monitor-run \n        runner-once runner-start runner-paper
 
 help: ## Show available targets
@@ -69,13 +69,16 @@ migration: ## Autogenerate a migration: make migration m="add x"
 seed: ## Load CSV seed market data into the database
 	$(PY) -m scripts.load_seed_data
 
+clean-db: ## Delete every stored candle (clears mixed seed/testnet history)
+	$(PY) scripts/clean_market_data.py --yes
+
 seed-data: ## Regenerate the deterministic synthetic candle CSV (demo data)
 	$(PY) scripts/generate_synthetic_data.py
 
 backtest-demo: ## Run the EMA-cross demo backtest on synthetic data
 	$(PY) scripts/run_demo_backtest.py
 
-collector-once: ## One collector pass (paper: CSV seeds -> market.candles; needs Postgres)
+collector-once: ## One collector pass (live klines -> market.candles; needs Postgres)
 	$(PY) -m market_collector --once
 
 collector-run: ## Collector loop, 60s between passes (needs Postgres)

@@ -70,6 +70,7 @@ def build_collector(
         symbols=settings.market_data.symbols,
         timeframes=settings.market_data.timeframes,
         exchange=settings.market_data.exchange,
+        environment=settings.exchange.environment,
         limit=limit or 500,
         retry=retry,
     )
@@ -129,6 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_class=type(build_source_for(settings)).__name__,
         klines_base_url=klines_base_url(settings),
         testnet=settings.exchange.testnet,
+        environment=settings.exchange.environment,
         symbols=list(settings.market_data.symbols),
     )
     engine = create_engine_from_settings(settings.database)

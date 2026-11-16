@@ -156,9 +156,33 @@ class MarketDataSettings(_Section):
     csv_dir: str = "data/seeds"
     symbols: tuple[SymbolStr, ...] = ("BTC/USDT",)
     timeframes: tuple[Timeframe, ...] = (Timeframe.H1,)
-    stale_after_seconds: int = Field(default=60, ge=1, le=3600)
+    #: How old a closed candle may be before the risk engine refuses to trade on it.
+    #: ``None`` (the default) derives the budget per timeframe from the bar length, the
+    #: collector cadence and a tolerance — see ``stale_after_for``. Pin an integer only
+    #: when a venue needs something tighter or looser than that derivation.
+    stale_after_seconds: int | None = Field(default=None, ge=1, le=86400)
+    #: How often the collector writes a new closed bar; part of the derived budget.
+    collector_interval_seconds: int = Field(default=60, ge=1, le=3600)
+    #: Extra slack in the derived budget for retries, retries' backoff and clock skew.
+    stale_tolerance_seconds: int = Field(default=60, ge=0, le=600)
     request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     max_retries: int = Field(default=5, ge=0, le=10)
+
+    def stale_after_for(self, timeframe: Timeframe) -> int:
+        """Seconds a quote may be old before it is considered stale.
+
+        A closed H1 bar is already up to an hour old the moment it closes, so a fixed
+        30-120 s window rejects every legitimate intent. The budget is one bar plus one
+        collector pass plus tolerance: long enough for the next closed bar to land,
+        still short enough that a stopped collector is noticed within one bar.
+        """
+        if self.stale_after_seconds is not None:
+            return self.stale_after_seconds
+        return (
+            timeframe.duration_seconds
+            + self.collector_interval_seconds
+            + self.stale_tolerance_seconds
+        )
 
     @field_validator("symbols")
     @classmethod
@@ -214,6 +238,15 @@ class ExchangeSettings(_Section):
     @property
     def configured(self) -> bool:
         return self.api_key is not None and self.api_secret is not None
+
+    @property
+    def environment(self) -> str:
+        """The venue tag stored with every candle: ``testnet`` or ``mainnet``.
+
+        Candles carry it as part of their primary key, so testnet prices collected today
+        can never be read as mainnet history later.
+        """
+        return "testnet" if self.testnet else "mainnet"
 
 
 class AlertingSettings(_Section):

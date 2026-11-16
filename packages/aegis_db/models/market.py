@@ -1,8 +1,11 @@
 """``market.candles``: OHLCV storage.
 
-The primary key is the natural key ``(symbol, timeframe, open_time)``. That is what
-makes the collector idempotent: re-collecting the same candle is an ``ON CONFLICT
-DO NOTHING/UPDATE`` instead of a duplicate row, and no surrogate id can drift.
+The primary key is the natural key ``(environment, symbol, timeframe, open_time)``.
+That is what makes the collector idempotent: re-collecting the same candle is an
+``ON CONFLICT DO NOTHING/UPDATE`` instead of a duplicate row, and no surrogate id can
+drift. ``environment`` (``testnet``/``mainnet``) is part of the key on purpose: testnet
+prices collected while the platform is paper-only can never be read back as mainnet
+history after a switch to real money.
 """
 
 from __future__ import annotations
@@ -34,10 +37,16 @@ class Candle(Base):
         ),
         CheckConstraint("low > 0", name="ck_candles_low_positive"),
         CheckConstraint("volume >= 0", name="ck_candles_volume_non_negative"),
+        CheckConstraint(
+            "environment IN ('testnet', 'mainnet')",
+            name="ck_candles_environment_known",
+        ),
         {"schema": "market"},
     )
 
     exchange: Mapped[str] = mapped_column(String(32), nullable=False, server_default="binance")
+    #: ``testnet`` or ``mainnet``; part of the primary key so venues never mix.
+    environment: Mapped[str] = mapped_column(String(8), primary_key=True, server_default="testnet")
     symbol: Mapped[str] = mapped_column(String(24), primary_key=True)
     timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
     open_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)

@@ -3,8 +3,10 @@
 **Use when:** bringing the platform up locally for paper trading, a demo, or to
 verify a change end to end.
 
-Requirements: Docker with Compose v2. No exchange credentials are needed; paper mode
-reads committed CSV seeds and never places a real order.
+Requirements: Docker with Compose v2. No exchange credentials are needed: paper mode
+reads the public testnet klines API and never places a real order. Set
+`AEGIS_MARKET_DATA__SOURCE=csv` in `.env` if you want a deterministic offline run
+instead.
 
 ## 1. Prepare configuration
 
@@ -48,13 +50,14 @@ Grafana: <http://localhost:3000> → folder **AegisTrade** → dashboard
 "AegisTrade — equity, risk, market data". Prometheus target
 `aegis-api` must be `UP` at <http://localhost:9090/targets>.
 
-Market data check (the collector should have written the seed bars):
+Market data check (the collector should have written live testnet bars for the
+configured venue):
 
 ```bash
 docker compose -f infra/compose/docker-compose.paper.yml exec postgres \
   psql -U aegis -d aegis -c \
-  "select symbol, timeframe, count(*), max(close_time) from market.candles
-   group by 1, 2;"
+  "select environment, symbol, timeframe, count(*), max(close_time)
+   from market.candles group by 1, 2, 3;"
 ```
 
 ## 4. Stop
@@ -73,5 +76,5 @@ audit trail) is a deliberate `docker compose down -v`, not part of routine shutd
 | `api` exits immediately | `make logs`; usually a missing `POSTGRES_PASSWORD` or an invalid config key (`extra="forbid"`) |
 | `/health` degraded | `docker compose ... ps | grep postgres`, then the API log for the DSN |
 | `/journal` 503 | same as above: the journal needs the database |
-| No candles | collector log; then `AEGIS_MARKET_DATA__CSV_DIR` and that `data/seeds/BTCUSDT_1h.csv` exists in the image |
+| No candles | collector log; check `AEGIS_MARKET_DATA__SOURCE` and that the host can reach `testnet.binance.vision` |
 | Grafana has no data | Prometheus target `UP`? dashboard time range? |

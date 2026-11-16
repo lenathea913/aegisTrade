@@ -1,8 +1,9 @@
 # Paper-trading stack: the same services as dev, pinned to configs/paper.yaml.
 #
 # No exchange credentials are needed and no live order can leave the platform:
-# execution.broker is `paper`, allow_live_orders is false, and the collector reads
-# committed CSV seeds unless you override market_data.source.
+# execution.broker is `paper` and allow_live_orders is false. The collector reads the
+# live testnet klines API (configs/paper.yaml); put AEGIS_MARKET_DATA__SOURCE=csv in
+# `.env` for a deterministic, offline run.
 #
 #   docker compose -f infra/compose/docker-compose.paper.yml up -d --build
 #   API      http://localhost:8000/health
@@ -16,6 +17,11 @@ x-app: &app
     dockerfile: infra/docker/Dockerfile
   image: aegis-trade:paper
   restart: unless-stopped
+  # Local overrides (source, keys, alerting) come from the repository `.env`; the
+  # `environment` block below only pins values a container must not inherit.
+  env_file:
+    - path: ../../.env
+      required: false
   environment: &app-env
     AEGIS_ENVIRONMENT: paper
     AEGIS_DATABASE__URL: postgresql+psycopg://aegis:${POSTGRES_PASSWORD:-aegis}@postgres:5432/aegis
@@ -23,7 +29,6 @@ x-app: &app
     AEGIS_EXECUTION__MODE: paper
     AEGIS_EXECUTION__ALLOW_LIVE_ORDERS: "false"
     AEGIS_RISK__KILL_SWITCH: "false"
-    AEGIS_MARKET_DATA__SOURCE: csv
     AEGIS_OBSERVABILITY__LOG_LEVEL: INFO
     AEGIS_OBSERVABILITY__JSON_LOGS: "true"
     AEGIS_OBSERVABILITY__METRICS_ENABLED: "true"

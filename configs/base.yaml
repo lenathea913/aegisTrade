@@ -25,13 +25,20 @@ execution:
 
 market_data:
   exchange: binance
-  source: csv            # csv (seed/paper) or exchange (network)
+  # csv (offline seeds) | exchange | binance (public klines API; exchange and binance
+  # are the same live source). Anything else fails loudly at startup.
+  source: binance
   csv_dir: data/seeds
   symbols:
     - BTC/USDT
   timeframes:
     - 1h
-  stale_after_seconds: 60   # risk rule 8: reject intents on older data
+  # Freshness budget for risk rule 8. null derives it per timeframe from
+  # timeframe_duration + collector_interval_seconds + stale_tolerance_seconds
+  # (1h -> 3720 s), so a legitimately closed hourly bar is never called stale.
+  stale_after_seconds: null
+  collector_interval_seconds: 60
+  stale_tolerance_seconds: 60
   request_timeout_seconds: 10
   max_retries: 5
 

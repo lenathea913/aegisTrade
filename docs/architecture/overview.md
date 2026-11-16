@@ -45,7 +45,8 @@ rather than a convention (`tests/integration/test_end_to_end_order_flow.py`).
 two schedules — an entry scan (default every 5 minutes) and a protective-exit check
 (default every minute) — and runs both against the same ledger under one lock. The
 entry job evaluates the kill switch, refuses symbols whose newest candle is older than
-`market_data.stale_after_seconds`, generates signals, converts the `RISK_OK` ones into
+the freshness budget (one bar + one collector pass + tolerance, derived per timeframe;
+`market_data.stale_after_seconds` pins it when set), generates signals, converts the `RISK_OK` ones into
 **draft** intents and hands them to `TradingPipeline`. It cannot build an `ApprovedOrder`,
 so the daemon has no second door around the gate. Startup raises `RunnerConfigError`
 when `execution.mode` is `live` and `execution.allow_live_orders` is false.
@@ -79,8 +80,9 @@ and startup logs `api_auth_disabled`. Comparisons use `hmac.compare_digest`.
 
 ## Data model
 
-- `market.candles` — primary key `(symbol, timeframe, open_time)`, `ON CONFLICT DO
-  NOTHING` on ingest, so re-runs can never duplicate a bar.
+- `market.candles` — primary key `(environment, symbol, timeframe, open_time)`,
+  `ON CONFLICT DO NOTHING` on ingest, so re-runs can never duplicate a bar and testnet
+  bars never mix with mainnet bars.
 - `trading.orders` — the submitted order **plus the approval evidence** (approval id,
   risk checks, max risk amount, stop, take profit), so an order can be explained
   after limits change.

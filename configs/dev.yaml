@@ -1,8 +1,9 @@
 # Local development: paper execution, seed CSV market data, verbose logs.
 
+# Live testnet klines: the dev stack rehearses the same feed the paper stack uses.
+# The freshness window is derived per timeframe (1h -> 3720 s), not pinned here.
 market_data:
-  source: csv
-  stale_after_seconds: 3600   # seed data is historical; freshness is not asserted in dev
+  source: binance
 
 observability:
   log_level: DEBUG

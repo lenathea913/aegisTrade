@@ -18,6 +18,8 @@ from aegis_config import (
     get_settings,
     load_settings,
 )
+from aegis_core import Timeframe
+from aegis_risk import RiskGate
 
 SECRET_SENTINEL = "do-not-leak-this-value"
 
@@ -29,16 +31,48 @@ def test_dev_overlay_is_loaded() -> None:
     assert settings.execution.broker == "paper"
     assert settings.observability.log_level == "DEBUG"
     assert settings.observability.json_logs is False
-    assert settings.market_data.source == "csv"
-    assert settings.market_data.stale_after_seconds == 3600
+    assert settings.market_data.source == "binance"
+    # Nothing is pinned, so the budget follows the configured timeframe.
+    assert settings.market_data.stale_after_seconds is None
+    assert settings.market_data.stale_after_for(Timeframe.H1) == 3720
 
 
 def test_paper_overlay_differs_from_dev() -> None:
     paper = load_settings("paper")
     assert paper.environment is Environment.PAPER
     assert paper.observability.json_logs is True
-    assert paper.market_data.stale_after_seconds == 120
+    assert paper.market_data.source == "binance"
+    assert paper.market_data.stale_after_seconds is None
     assert paper.risk.kill_switch is False
+
+
+def test_the_freshness_window_follows_the_timeframe() -> None:
+    market = load_settings("paper").market_data
+
+    # One bar + one collector pass + tolerance, never a fixed 120 s.
+    assert market.stale_after_for(Timeframe.M15) == 900 + 60 + 60
+    assert market.stale_after_for(Timeframe.H1) == 3600 + 60 + 60
+    assert market.stale_after_for(Timeframe.D1) == 86400 + 60 + 60
+
+
+def test_an_explicit_freshness_window_still_wins() -> None:
+    settings = load_settings("paper", overrides={"market_data": {"stale_after_seconds": 30}})
+
+    assert settings.market_data.stale_after_for(Timeframe.H1) == 30
+
+
+def test_the_risk_gate_derives_its_window_from_the_traded_timeframe() -> None:
+    gate = RiskGate.from_settings(load_settings("paper"), Timeframe.H1)
+
+    assert gate.stale_after_seconds == 3720
+
+
+def test_exchange_environment_names_the_venue() -> None:
+    assert load_settings("paper").exchange.environment == "testnet"
+    mainnet = load_settings(
+        "paper", overrides={"exchange": {"testnet": False, "base_url": "https://api.binance.com"}}
+    )
+    assert mainnet.exchange.environment == "mainnet"
 
 
 def test_live_overlay_requires_credentials() -> None:
@@ -54,7 +88,8 @@ def test_live_overlay_with_credentials_stays_inert() -> None:
     assert settings.execution.mode is ExecutionMode.LIVE
     assert settings.execution.allow_live_orders is False  # second, independent gate
     assert settings.risk.limits.max_risk_per_trade_pct == 0.25
-    assert settings.market_data.stale_after_seconds == 30
+    assert settings.market_data.stale_after_seconds is None
+    assert settings.exchange.environment == "mainnet"
 
 
 def test_risk_limits_are_shared_with_the_domain() -> None:

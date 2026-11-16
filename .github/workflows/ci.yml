@@ -93,6 +93,10 @@ jobs:
       POSTGRES_PASSWORD: aegis
     steps:
       - uses: actions/checkout@v4
+      - name: pin the smoke test to committed seeds
+        # The collector now defaults to the live testnet API. The smoke job must not
+        # depend on an external venue being reachable, so it opts back into CSV seeds.
+        run: echo "AEGIS_MARKET_DATA__SOURCE=csv" > .env
       - name: start the development stack (wait for healthchecks)
         run: |
           docker compose -f infra/compose/docker-compose.dev.yml up -d --build --wait --wait-timeout 420

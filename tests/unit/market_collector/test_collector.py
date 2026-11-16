@@ -71,7 +71,9 @@ class RecordingWriter:
         self.seen: set[tuple[str, str, datetime]] = set()
         self.calls: list[tuple[str, str, int]] = []
 
-    def upsert(self, candles: Sequence[Candle], *, exchange: str, source: str) -> int:
+    def upsert(
+        self, candles: Sequence[Candle], *, exchange: str, source: str, environment: str
+    ) -> int:
         self.calls.append((exchange, source, len(candles)))
         new = 0
         for candle in candles:
@@ -166,7 +168,9 @@ def test_empty_source_result_is_reported() -> None:
 
 def test_store_failures_are_reported() -> None:
     class BrokenWriter:
-        def upsert(self, candles: Sequence[Candle], *, exchange: str, source: str) -> int:
+        def upsert(
+            self, candles: Sequence[Candle], *, exchange: str, source: str, environment: str
+        ) -> int:
             raise RuntimeError("database unavailable")
 
     summary = build(ListSource({"BTC/USDT": BTC}), BrokenWriter()).run_once()

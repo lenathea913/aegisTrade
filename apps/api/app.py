@@ -30,12 +30,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from aegis_config import Settings, load_settings
 from aegis_core import __version__, get_random_motivation
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
+from aegis_execution import build_broker
 from aegis_ledger import LedgerError, PortfolioLedger
 from aegis_observability import CONTENT_TYPE_LATEST, Metrics, configure_logging, get_logger
 from aegis_risk import RiskGate
 from api.repository import SqlTradingRepository
 from api.schemas import (
     ConversionResponse,
+    ExchangeStatusResponse,
     HealthResponse,
     IntentResponse,
     MotivationResponse,
@@ -54,6 +56,33 @@ from signal_service import (
 )
 
 __all__ = ["create_app"]
+
+
+def _probe_exchange(settings: Settings) -> tuple[bool, str]:
+    """Ping the configured venue; any failure is reported as disconnected.
+
+    Built per probe so the API never holds credentials it does not need, and a
+    non-testnet broker is only built when ``live_confirm`` actually allows it.
+    """
+    try:
+        broker = build_broker(
+            settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
+        )
+    except Exception as exc:
+        return False, f"exchange not configured: {exc}"
+    if not broker.live:
+        return True, "paper broker: fills are simulated locally"
+    ping = getattr(broker, "ping", None)
+    if ping is None:
+        return True, "connected (this broker exposes no ping)"
+    try:
+        ok = bool(ping())
+    except Exception as exc:
+        return False, f"exchange ping failed: {exc}"
+    if ok:
+        return True, "testnet reachable"
+    return False, "testnet unreachable"
+
 
 WEB_DIR = Path(__file__).parent
 
@@ -91,6 +120,7 @@ def create_app(
             settings=settings,
             repository=SqlTradingRepository(session_factory),
             ledger=PortfolioLedger(initial_equity=settings.risk.initial_equity),
+            exchange_probe=lambda: _probe_exchange(settings),
         )
 
     if signals is None and session_factory is not None:
@@ -126,6 +156,15 @@ def create_app(
             logger.info("api_stopped")
 
     app = FastAPI(title="AegisTrade API", version=__version__, lifespan=lifespan)
+
+    templates = TEMPLATES
+
+    def _render(request: Request, name: str, context: dict[str, Any]) -> Response:
+        """Render a template with the exchange badge always in scope."""
+        return templates.TemplateResponse(
+            request, name, {"exchange": service.exchange_status(), **context}
+        )
+
     app.state.settings = settings
     app.state.service = service
     app.state.metrics = metrics
@@ -178,6 +217,11 @@ def create_app(
         """One process reminder. Never a claim about returns."""
         return MotivationResponse(quote=get_random_motivation())
 
+    @app.get("/api/exchange/status", response_model=ExchangeStatusResponse, tags=["ops"])
+    def exchange_status() -> ExchangeStatusResponse:
+        """Where orders go and whether that venue answers; drives the header badge."""
+        return service.exchange_status()
+
     # ------------------------------------------------------------- portfolio
 
     @app.get("/positions", tags=["portfolio"])
@@ -190,7 +234,7 @@ def create_app(
         response = service.positions()
         metrics.set_equity(Decimal(service.risk_budget().equity))
         if _wants_html(request):
-            return TEMPLATES.TemplateResponse(request, "positions.html", {"positions": response})
+            return _render(request, "positions.html", {"positions": response})
         return JSONResponse(content=response.model_dump(mode="json"))
 
     @app.get("/risk/budget", response_model=RiskBudgetResponse, tags=["risk"])
@@ -214,7 +258,7 @@ def create_app(
                 detail="journal unavailable: database is not reachable",
             ) from exc
         if _wants_html(request):
-            return TEMPLATES.TemplateResponse(request, "journal.html", {"journal": response})
+            return _render(request, "journal.html", {"journal": response})
         return JSONResponse(content=response.model_dump(mode="json"))
 
     # ---------------------------------------------------------------- signals
@@ -250,6 +294,11 @@ def create_app(
     )
     def convert_signal(signal_id: str) -> ConversionResponse:
         """Produce a **draft** intent; the risk engine runs again here."""
+        if not service.exchange_status().connected:
+            # An unreachable venue must not hand out intentions it cannot place.
+            raise HTTPException(
+                status_code=503, detail="exchange is not connected; conversion is disabled"
+            )
         conversion = _signals().convert(signal_id)
         return ConversionResponse(
             signal=SignalResponse.from_domain(conversion.signal),
@@ -266,7 +315,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     def overview_page(request: Request) -> Response:
-        return TEMPLATES.TemplateResponse(
+        return _render(
             request,
             "overview.html",
             {
@@ -281,7 +330,7 @@ def create_app(
         service_ = _signals()
         items = service_.list_signals()
         selected = items[0] if items else None
-        return TEMPLATES.TemplateResponse(
+        return _render(
             request,
             "signals.html",
             {
@@ -295,13 +344,11 @@ def create_app(
 
     @app.get("/partials/motivation", include_in_schema=False)
     def motivation_partial(request: Request) -> Response:
-        return TEMPLATES.TemplateResponse(
-            request, "partials/motivation.html", {"quote": get_random_motivation()}
-        )
+        return _render(request, "partials/motivation.html", {"quote": get_random_motivation()})
 
     @app.get("/partials/overview", include_in_schema=False)
     def overview_partial(request: Request) -> Response:
-        return TEMPLATES.TemplateResponse(
+        return _render(
             request,
             "partials/overview.html",
             {"health": service.health(), "budget": service.risk_budget()},
@@ -309,21 +356,19 @@ def create_app(
 
     @app.get("/partials/positions", include_in_schema=False)
     def positions_partial(request: Request) -> Response:
-        return TEMPLATES.TemplateResponse(
-            request, "partials/positions.html", {"positions": service.positions()}
-        )
+        return _render(request, "partials/positions.html", {"positions": service.positions()})
 
     @app.get("/partials/signals", include_in_schema=False)
     def signals_partial(request: Request) -> Response:
         service_ = _signals()
         items = service_.list_signals()
-        return TEMPLATES.TemplateResponse(request, "partials/signals.html", {"signals": items})
+        return _render(request, "partials/signals.html", {"signals": items})
 
     @app.get("/partials/signals/{signal_id}", include_in_schema=False)
     def signal_detail_partial(request: Request, signal_id: str) -> Response:
         service_ = _signals()
         signal = service_.get(signal_id)
-        return TEMPLATES.TemplateResponse(
+        return _render(
             request,
             "partials/signal_detail.html",
             {
@@ -339,14 +384,18 @@ def create_app(
         service_ = _signals()
         conversion = None
         message = None
-        try:
-            conversion = service_.convert(signal_id)
-        except SignalRiskRejectedError as exc:
-            message = "Risk engine refused this signal: " + "; ".join(exc.reasons)
-        except SignalStateError as exc:
-            message = str(exc)
+        status = service.exchange_status()
+        if not status.connected:
+            message = f"Convert disabled: exchange is not connected ({status.detail})."
+        else:
+            try:
+                conversion = service_.convert(signal_id)
+            except SignalRiskRejectedError as exc:
+                message = "Risk engine refused this signal: " + "; ".join(exc.reasons)
+            except SignalStateError as exc:
+                message = str(exc)
         signal = service_.get(signal_id)
-        return TEMPLATES.TemplateResponse(
+        return _render(
             request,
             "partials/signal_detail.html",
             {
@@ -366,7 +415,7 @@ def create_app(
         except SignalStateError as exc:
             message = str(exc)
         signal = service_.get(signal_id)
-        return TEMPLATES.TemplateResponse(
+        return _render(
             request,
             "partials/signal_detail.html",
             {
@@ -382,7 +431,7 @@ def create_app(
         service_ = _signals()
         service_.generate()
         items = service_.list_signals()
-        return TEMPLATES.TemplateResponse(request, "partials/signals.html", {"signals": items})
+        return _render(request, "partials/signals.html", {"signals": items})
 
     if settings.observability.metrics_enabled:
 

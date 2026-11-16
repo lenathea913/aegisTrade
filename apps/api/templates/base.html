@@ -22,9 +22,31 @@
             >
           {% endfor %}
         </nav>
-        <span class="ml-auto rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">
-          {{ health.environment if health else "—" }} · paper
-        </span>
+        <div class="ml-auto flex flex-wrap items-center gap-2 text-xs">
+          <span class="rounded bg-slate-800 px-2 py-1 text-slate-300">
+            {{ health.environment if health else "—" }}
+          </span>
+          {% set mode = exchange.label if exchange else "PAPER" %}
+          {% if mode == "TESTNET" %}
+            {% set mode_tone = "bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50" %}
+          {% elif mode == "PAPER" %}
+            {% set mode_tone = "bg-slate-700/60 text-slate-200" %}
+          {% else %}
+            {% set mode_tone = "bg-rose-600/30 text-rose-100 ring-1 ring-rose-500/60" %}
+          {% endif %}
+          <span class="rounded px-2 py-1 font-semibold tracking-wide {{ mode_tone }}" title="Execution mode">
+            {{ mode }} MODE
+          </span>
+          {% if exchange %}
+            <span
+              class="flex items-center gap-1.5 rounded px-2 py-1 {% if exchange.connected %}bg-emerald-500/10 text-emerald-300{% else %}bg-rose-500/20 text-rose-100 ring-1 ring-rose-500/50{% endif %}"
+              title="{{ exchange.detail }}"
+            >
+              <span class="h-2 w-2 rounded-full {% if exchange.connected %}bg-emerald-400{% else %}bg-rose-400{% endif %}"></span>
+              {% if exchange.connected %}exchange connected{% else %}exchange offline{% endif %}
+            </span>
+          {% endif %}
+        </div>
       </div>
     </header>
 

@@ -8,13 +8,14 @@ It is deliberately *not* a profit bot, not a price-prediction system, and it mak
 reproducible, every order checked against explicit risk limits, and every state
 change explainable after the fact.
 
-> Status: **FASE 11 — dashboard, signals and restart-safe ledger**. On top of the
-> FASE 10 stack (risk gate, research, collector, audit/ledger, position monitor,
-> read-only API, compose stack) the ledger now *reconstructs itself from
-> `trading.trades` on startup*, signals are a first-class domain object with a risk
-> preview, and a server-rendered Jinja2/HTMX dashboard shows the same truth the API
-> reports. There is still no live adapter and no scheduled entry runner, and the
-> dashboard cannot execute anything: conversion stops at a `DRAFT` intent.
+> Status: **FASE 13 — real-time marks and a testnet adapter**. On top of the paper
+> stack (risk gate, research, collector, audit/ledger, position monitor, dashboard)
+> AegisTrade now streams marks over WebSocket, ships a **Binance Spot Testnet**
+> broker that refuses non-testnet hosts, reconciles open orders with the exchange
+> every five seconds, and shows mode + connectivity badges in the header. The
+> dashboard still cannot execute anything: conversion stops at a `DRAFT` intent, and
+> Convert is disabled whenever the exchange is unreachable. Testnet only — never
+> real keys; see `docs/runbooks/live-testnet-setup.md`.
 > Schema, triggers, idempotency, the journal and ledger reconstruction were
 > exercised on PostgreSQL 16; the Docker image is built in CI, not on the build
 > machine (no Docker locally).
@@ -60,6 +61,8 @@ no Kafka, no Kubernetes in the MVP — see `docs/adr/0001-modular-monolith.md`.
 | --- | --- |
 | `apps/api` | FastAPI REST surface for the dashboard (health, positions, risk budget) |
 | `apps/market_collector` | Idempotent OHLCV collector worker |
+| `apps/market_streamer` | Binance WebSocket marks (`bookTicker` mid price) into Redis |
+| `apps/order_reconciler` | Reconciles open orders with the exchange; records late fills |
 | `apps/research_worker` | Backtests and walk-forward runs |
 | `apps/risk_engine` | Thin service wrapper over `packages/aegis_risk` |
 | `apps/alerting` | Optional Telegram/Slack notifications |

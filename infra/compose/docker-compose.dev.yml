@@ -1,4 +1,5 @@
-# Development stack: Postgres, Redis, migrations, API, collector, Prometheus, Grafana.
+# Development stack: Postgres, Redis, migrations, API, collector, mark streamer,
+# Prometheus, Grafana.
 #
 # Everything runs from the same image (infra/docker/Dockerfile); only the command
 # differs. Secrets come from the environment with development-only defaults — never
@@ -97,6 +98,20 @@ services:
     # The image's HEALTHCHECK probes the API port; this process serves no HTTP,
     # so inheriting it would mark a perfectly healthy collector as unhealthy
     # (and `docker compose up --wait` would never return).
+    healthcheck:
+      disable: true
+
+  market_streamer:
+    <<: *app
+    command: ["python", "-m", "market_streamer"]
+    environment:
+      <<: *app-env
+      # Public market data only: no key, no orders. Marks land in Redis under
+      # aegis:mark:<symbol> and expire after streaming.mark_ttl_seconds.
+      AEGIS_STREAMING__ENABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       disable: true
 

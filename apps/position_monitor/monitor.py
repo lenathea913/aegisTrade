@@ -81,6 +81,7 @@ class PositionMonitor:
         strategy_id: str = "position_monitor",
         protect_take_profit: bool = True,
         use_live_price: bool = False,
+        live_quotes: QuoteSource | None = None,
     ) -> None:
         self._ledger = ledger
         self._pipeline = pipeline
@@ -89,6 +90,7 @@ class PositionMonitor:
         self._strategy_id = strategy_id
         self._protect_take_profit = protect_take_profit
         self._use_live_price = use_live_price
+        self._live_quotes = live_quotes
         self._logger = get_logger("aegis.position_monitor")
 
     @property
@@ -157,12 +159,16 @@ class PositionMonitor:
     def _quote(self, symbol: str) -> MarketQuote | None:
         """Latest price: the ledger's live mark when configured, else the last candle.
 
-        ``position_monitor.use_live_price`` is the paper-mode switch for acting on a
-        pushed mark-to-market price instead of waiting for the next closed candle. The
-        mark is only used when the ledger actually has one; otherwise the closed-candle
-        quote is the honest answer.
+        ``position_monitor.use_live_price`` is the switch for acting on a real-time
+        price instead of waiting for the next closed candle. ``live_quotes`` (Redis
+        marks from ``apps/market_streamer``) wins, then a mark pushed into the ledger,
+        and the last closed candle is the honest fallback when neither exists.
         """
         if self._use_live_price:
+            if self._live_quotes is not None:
+                live = self._live_quotes.latest(symbol)
+                if live is not None:
+                    return live
             mark = self._ledger.mark(symbol)
             if mark is not None:
                 return MarketQuote(symbol=symbol, price=mark, as_of=self._clock())

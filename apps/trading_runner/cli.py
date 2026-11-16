@@ -31,7 +31,7 @@ from aegis_db import create_engine_from_settings, create_session_factory, sessio
 from aegis_ledger import LedgerError, LedgerStore, LedgerWriter, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
 from aegis_risk import RiskGate
-from position_monitor.quotes import CandleQuoteSource
+from position_monitor.quotes import CandleQuoteSource, live_quote_source
 from signal_service import SignalService, SqlCandleRepository
 from trading_runner.candles import SqlLatestCandleSource
 from trading_runner.runner import RunnerReport, TradingRunner, ensure_safe_execution_mode
@@ -82,6 +82,7 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         candles=SqlLatestCandleSource(factory),
         quotes=CandleQuoteSource(factory),
         writer_factory=lambda: _writer(factory),
+        live_quotes=live_quote_source(settings, factory),
     )
 
 

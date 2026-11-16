@@ -17,6 +17,7 @@ from aegis_core import OrderIntent, Signal
 
 __all__ = [
     "ConversionResponse",
+    "ExchangeStatusResponse",
     "HealthResponse",
     "IntentResponse",
     "JournalEntryResponse",
@@ -189,6 +190,17 @@ class IntentResponse(BaseModel):
             reason=intent.reason,
             created_at=intent.created_at,
         )
+
+
+class ExchangeStatusResponse(BaseModel):
+    """Where orders would go right now, and whether that venue answers."""
+
+    mode: str
+    label: str
+    broker: str
+    connected: bool
+    detail: str
+    checked_at: datetime
 
 
 class ConversionResponse(BaseModel):

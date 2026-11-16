@@ -23,6 +23,7 @@ from aegis_core import Trade, __version__, utc_now
 from aegis_ledger import AuditEvent, PortfolioLedger
 from api.repository import ApiRepository
 from api.schemas import (
+    ExchangeStatusResponse,
     HealthResponse,
     JournalEntryResponse,
     JournalResponse,
@@ -40,6 +41,8 @@ DEFAULT_JOURNAL_LIMIT = 50
 # connect timeout. Cache the answer so a dead database slows one poll a minute,
 # not every poll.
 HEALTH_CACHE_SECONDS = 30.0
+# The badge is polled with the dashboard; a ping per request would hammer the venue.
+EXCHANGE_STATUS_CACHE_SECONDS = 10.0
 
 
 class ApiService:
@@ -52,12 +55,15 @@ class ApiService:
         repository: ApiRepository,
         ledger: PortfolioLedger,
         clock: Callable[[], datetime] = utc_now,
+        exchange_probe: Callable[[], tuple[bool, str]] | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._ledger = ledger
         self._clock = clock
         self._health_cache: tuple[float, HealthResponse] | None = None
+        self._exchange_probe = exchange_probe
+        self._exchange_cache: tuple[float, ExchangeStatusResponse] | None = None
 
     @property
     def ledger(self) -> PortfolioLedger:
@@ -85,6 +91,45 @@ class ApiService:
             time=self._clock(),
         )
         self._health_cache = (monotonic_now, response)
+        return response
+
+    # -------------------------------------------------------------- exchange
+
+    def exchange_status(self) -> ExchangeStatusResponse:
+        """Mode, venue and reachability, cached for 10 s.
+
+        A probe that raises is a disconnected exchange, never a 500: the dashboard has
+        to keep rendering while the venue is unreachable.
+        """
+        monotonic_now = time.monotonic()
+        if (
+            self._exchange_cache is not None
+            and monotonic_now - self._exchange_cache[0] < EXCHANGE_STATUS_CACHE_SECONDS
+        ):
+            return self._exchange_cache[1]
+
+        broker = self._settings.execution.broker
+        label = (
+            "TESTNET"
+            if broker == "binance-testnet"
+            else self._settings.execution.mode.value.upper()
+        )
+        if self._exchange_probe is None:
+            connected, detail = True, "no exchange probe configured (offline wiring)"
+        else:
+            try:
+                connected, detail = self._exchange_probe()
+            except Exception as exc:
+                connected, detail = False, f"exchange probe failed: {exc}"
+        response = ExchangeStatusResponse(
+            mode=self._settings.execution.mode.value,
+            label=label,
+            broker=broker,
+            connected=connected,
+            detail=detail,
+            checked_at=self._clock(),
+        )
+        self._exchange_cache = (monotonic_now, response)
         return response
 
     # ------------------------------------------------------------ positions

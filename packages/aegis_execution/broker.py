@@ -16,7 +16,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
 
-from aegis_config import ExecutionSettings
+from aegis_config import ExchangeSettings, ExecutionSettings
 from aegis_core import Order, OrderType, Side, utc_now
 from aegis_execution.errors import LiveTradingDisabledError
 
@@ -41,6 +41,9 @@ class Broker(Protocol):
     """What the gateway needs from any broker."""
 
     name: str
+    #: True for anything that routes to an exchange (testnet included), so the
+    #: gateway can require ``allow_live_orders`` without knowing the class.
+    live: bool
 
     def submit(
         self, order: Order, *, market_price: Decimal, now: datetime | None = None
@@ -52,6 +55,7 @@ class PaperBroker:
     """Deterministic simulator: no network, no credentials, no real money."""
 
     name = "paper"
+    live = False
 
     def __init__(
         self,
@@ -109,6 +113,7 @@ class LiveBroker:
     """Stub for a real exchange adapter. It never trades in this MVP."""
 
     name = "live"
+    live = True
 
     def submit(
         self, order: Order, *, market_price: Decimal, now: datetime | None = None
@@ -119,10 +124,35 @@ class LiveBroker:
         )
 
 
-def build_broker(settings: ExecutionSettings) -> Broker:
-    """Broker selected by configuration (mode and broker are cross-validated)."""
+def build_broker(
+    settings: ExecutionSettings,
+    *,
+    exchange: ExchangeSettings | None = None,
+    live_confirm: bool = False,
+) -> Broker:
+    """Broker selected by configuration (mode and broker are cross-validated).
+
+    ``binance-testnet`` is built lazily so the paper path never imports an HTTP
+    client, and it refuses to start without credentials or without a testnet URL
+    unless ``live_confirm`` was passed explicitly.
+    """
     if settings.broker == "paper":
         return PaperBroker.from_settings(settings)
     if settings.broker == "live":
         return LiveBroker()
+    if settings.broker == "binance-testnet":
+        from aegis_execution.binance_broker import BinanceTestnetBroker
+
+        if exchange is None or not exchange.configured:
+            raise ValueError(
+                "execution.broker 'binance-testnet' requires exchange credentials "
+                "(AEGIS_EXCHANGE__API_KEY / AEGIS_EXCHANGE__API_SECRET)"
+            )
+        assert exchange.api_key is not None and exchange.api_secret is not None
+        return BinanceTestnetBroker(
+            api_key=exchange.api_key,
+            api_secret=exchange.api_secret,
+            base_url=exchange.base_url,
+            live_confirm=live_confirm,
+        )
     raise ValueError(f"unknown broker: {settings.broker!r}")

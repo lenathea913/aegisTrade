@@ -29,13 +29,20 @@
   {% endif %}
 </div>
 
+{% if exchange and not exchange.connected %}
+<p class="mt-4 rounded border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-200">
+  Convert is disabled: the exchange is offline ({{ exchange.detail }}).
+</p>
+{% endif %}
+
 <div class="mt-4 flex flex-wrap gap-2">
   <button
     class="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
     hx-post="/ui/signals/{{ selected.signal_id }}/convert"
     hx-target="#signal-detail"
     hx-swap="innerHTML"
-    {% if not selected.is_actionable %}disabled{% endif %}
+    {% if not selected.is_actionable or (exchange and not exchange.connected) %}disabled{% endif %}
+    title="{% if exchange and not exchange.connected %}exchange offline{% endif %}"
   >
     Convert to draft intent
   </button>

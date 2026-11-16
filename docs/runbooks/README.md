@@ -14,6 +14,7 @@ do.
 | [ledger-reconciliation.md](ledger-reconciliation.md) | Positions or equity look wrong after a restart |
 | [rejection-triage.md](rejection-triage.md) | Risk rejections need explaining |
 | [autonomous-trading.md](autonomous-trading.md) | Starting, stopping or watching the runner daemon |
+| [live-testnet-setup.md](live-testnet-setup.md) | Moving from paper to Binance Spot Testnet |
 
 ## Principles
 

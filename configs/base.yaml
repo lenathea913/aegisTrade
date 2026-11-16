@@ -52,12 +52,25 @@ risk:
 exchange:
   id: binance
   testnet: true
+  base_url: https://testnet.binance.vision   # non-testnet hosts are refused
   request_timeout_seconds: 10
   # api_key / api_secret intentionally absent: AEGIS_EXCHANGE__API_KEY etc.
 
 alerting:
   enabled: false
   channels: []
+
+# Real-time marks (apps/market_streamer) and order reconciliation (apps/order_reconciler).
+streaming:
+  enabled: false            # compose testnet stack turns this on
+  testnet_url: wss://stream.testnet.binance.vision/stream
+  mainnet_url: wss://stream.binance.com:9443/stream
+  reconnect_seconds: 5
+  mark_ttl_seconds: 15      # a mark older than this is not actionable
+
+reconciler:
+  enabled: true
+  interval_seconds: 5
 
 observability:
   service_name: aegis-trade

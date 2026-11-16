@@ -38,7 +38,7 @@ from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerStore, LedgerWriter, PortfolioLedger, PositionProtection
 from aegis_risk import RiskGate
 from position_monitor.monitor import MonitorAction, PositionMonitor
-from position_monitor.quotes import CandleQuoteSource
+from position_monitor.quotes import CandleQuoteSource, live_quote_source
 
 __all__ = ["action_payload", "build_monitor", "main", "restore_from_database"]
 
@@ -110,7 +110,9 @@ def build_monitor(
     that wraps one check, so an exit commits together with its audit trail.
     """
     book = ledger or PortfolioLedger(initial_equity=settings.risk.initial_equity)
-    broker = build_broker(settings.execution)
+    broker = build_broker(
+        settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
+    )
     gateway = ExecutionGateway(broker, allow_live_orders=settings.execution.allow_live_orders)
     pipeline = TradingPipeline(
         gate=RiskGate.from_settings(settings),
@@ -123,6 +125,7 @@ def build_monitor(
         pipeline=pipeline,
         quotes=CandleQuoteSource(factory),
         use_live_price=settings.position_monitor.use_live_price,
+        live_quotes=live_quote_source(settings, factory),
         protect_take_profit=settings.position_monitor.protect_take_profit,
     )
 

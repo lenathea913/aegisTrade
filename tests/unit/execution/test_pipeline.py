@@ -39,6 +39,7 @@ class SpyBroker:
     """Counts submissions so a rejection test can prove the broker was never used."""
 
     name = "paper"
+    live = False
 
     def __init__(self) -> None:
         self.calls = 0

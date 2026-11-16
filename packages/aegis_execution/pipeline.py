@@ -51,6 +51,9 @@ class PipelineResult:
     execution: ExecutionResult | None = None
     update: LedgerUpdate | None = None
     events: tuple[AuditEvent, ...] = ()
+    #: Set when the exchange could not be reached or refused the order. The ledger
+    #: is untouched in that case: no fill, no position, no trade.
+    error: str | None = None
 
     @property
     def approved_order(self) -> ApprovedOrder | None:
@@ -149,7 +152,40 @@ class TradingPipeline:
             )
         ]
 
-        execution = self._gateway.execute(approved, market=market)
+        try:
+            execution = self._gateway.execute(approved, market=market)
+        except ExecutionError as exc:
+            # A broker/exchange failure is not a fill: record it, tell the operator,
+            # and leave the ledger untouched rather than half-updated.
+            self._logger.error(
+                "exchange_error",
+                symbol=intent.symbol,
+                strategy_id=intent.strategy_id,
+                side=intent.side.value,
+                error=str(exc),
+                motivation=get_random_motivation(),
+            )
+            failure = AuditEvent(
+                event_type=EventType.ORDER_NOT_FILLED,
+                entity_type="order",
+                entity_id=approved.approval_id,
+                payload={
+                    "approval_id": approved.approval_id,
+                    "symbol": intent.symbol,
+                    "reason": "exchange_error",
+                    "error": str(exc),
+                },
+            )
+            events.append(failure)
+            # The approval is part of the record even though no fill followed it.
+            self._emit(*events)
+            return PipelineResult(
+                intent=intent,
+                decision=decision,
+                approved=approved,
+                events=tuple(events),
+                error=str(exc),
+            )
         order = execution.order
 
         if execution.trade is None:

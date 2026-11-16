@@ -113,6 +113,7 @@ class TradingRunner:
         candles: LatestCandleSource,
         quotes: QuoteSource,
         writer_factory: WriterFactory,
+        live_quotes: QuoteSource | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._settings = settings
@@ -121,6 +122,7 @@ class TradingRunner:
         self._candles = candles
         self._quotes = quotes
         self._writer_factory = writer_factory
+        self._live_quotes = live_quotes
         self._clock = clock
         self._timeframe: Timeframe = settings.market_data.timeframes[0]
         self._logger = get_logger("aegis.runner")
@@ -291,7 +293,11 @@ class TradingRunner:
 
     def _pipeline(self, writer: LedgerWriter | None) -> TradingPipeline:
         gateway = ExecutionGateway(
-            build_broker(self._settings.execution),
+            build_broker(
+                self._settings.execution,
+                exchange=self._settings.exchange,
+                live_confirm=self._settings.live_confirm,
+            ),
             allow_live_orders=self._settings.execution.allow_live_orders,
         )
         return TradingPipeline(
@@ -308,5 +314,6 @@ class TradingRunner:
             quotes=self._quotes,
             clock=self._clock,
             use_live_price=self._settings.position_monitor.use_live_price,
+            live_quotes=self._live_quotes,
             protect_take_profit=self._settings.position_monitor.protect_take_profit,
         )

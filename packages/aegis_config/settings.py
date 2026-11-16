@@ -34,10 +34,12 @@ __all__ = [
     "MarketDataSettings",
     "ObservabilitySettings",
     "PositionMonitorSettings",
+    "ReconcilerSettings",
     "RedisSettings",
     "RiskSettings",
     "RunnerSettings",
     "Settings",
+    "StreamingSettings",
 ]
 
 
@@ -113,13 +115,35 @@ class ExecutionSettings(_Section):
 
     @model_validator(mode="after")
     def _broker_matches_mode(self) -> Self:
-        expected = "live" if self.mode is ExecutionMode.LIVE else "paper"
-        if self.broker != expected:
+        allowed = ("live", "binance-testnet") if self.mode is ExecutionMode.LIVE else ("paper",)
+        if self.broker not in allowed:
             raise ValueError(
                 f"execution.broker {self.broker!r} does not match execution.mode "
-                f"{self.mode.value!r}; expected {expected!r}"
+                f"{self.mode.value!r}; expected one of {allowed}"
             )
         return self
+
+
+class StreamingSettings(_Section):
+    """Real-time price feed (``apps/market_streamer``).
+
+    Public market data needs no credentials, but the URL still follows the exchange
+    environment: the testnet feed is the default so a paper/testnet run never mixes
+    prices with mainnet.
+    """
+
+    enabled: bool = False
+    testnet_url: str = "wss://stream.testnet.binance.vision/stream"
+    mainnet_url: str = "wss://stream.binance.com:9443/stream"
+    reconnect_seconds: float = Field(default=5.0, ge=1, le=120)
+    mark_ttl_seconds: int = Field(default=15, ge=1, le=300)
+
+
+class ReconcilerSettings(_Section):
+    """Order status synchronisation (``apps/order_reconciler``)."""
+
+    enabled: bool = True
+    interval_seconds: int = Field(default=5, ge=1, le=300)
 
 
 class MarketDataSettings(_Section):
@@ -173,6 +197,9 @@ class ExchangeSettings(_Section):
     api_key: SecretStr | None = None
     api_secret: SecretStr | None = None
     testnet: bool = True
+    #: REST base URL. The Binance adapter refuses anything that is not a testnet
+    #: host unless AEGIS_LIVE_CONFIRM is true (see aegis_execution.binance_broker).
+    base_url: str = "https://testnet.binance.vision"
     request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
 
     @field_validator("api_key", "api_secret", mode="before")
@@ -262,6 +289,11 @@ class Settings(BaseSettings):
     redis: RedisSettings
     execution: ExecutionSettings = ExecutionSettings()
     market_data: MarketDataSettings = MarketDataSettings()
+    streaming: StreamingSettings = StreamingSettings()
+    reconciler: ReconcilerSettings = ReconcilerSettings()
+    # Read from ``AEGIS_LIVE_CONFIRM``: the extra, deliberate opt-in that lets an
+    # exchange adapter talk to a non-testnet base URL.
+    live_confirm: bool = False
     risk: RiskSettings = RiskSettings()
     exchange: ExchangeSettings = ExchangeSettings()
     alerting: AlertingSettings = AlertingSettings()

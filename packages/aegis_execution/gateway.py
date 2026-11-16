@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from aegis_core import ApprovedOrder, MarketContext, Order, Trade, UnapprovedOrderError, utc_now
-from aegis_execution.broker import Broker, BrokerFill, LiveBroker
+from aegis_execution.broker import Broker, BrokerFill
 from aegis_execution.errors import ExecutionError, LiveTradingDisabledError
 
 __all__ = ["ExecutionGateway", "ExecutionResult"]
@@ -65,7 +65,7 @@ class ExecutionGateway:
                 "ExecutionGateway only accepts ApprovedOrder; "
                 "an OrderIntent must pass RiskEngine first"
             )
-        if isinstance(self._broker, LiveBroker) and not self._allow_live_orders:
+        if getattr(self._broker, "live", False) and not self._allow_live_orders:
             raise LiveTradingDisabledError(
                 "live orders are disabled (execution.allow_live_orders = false)"
             )

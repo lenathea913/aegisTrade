@@ -18,6 +18,7 @@ dependencies = [
     "apscheduler>=3.10,<4.0",
     "redis>=5.2,<6.0",
     "httpx>=0.28,<1.0",
+    "websockets>=13.0,<16.0",
     "pyyaml>=6.0,<7.0",
     "structlog>=24.4,<26.0",
     "prometheus-client>=0.21,<1.0",
@@ -70,7 +71,7 @@ known-first-party = ["aegis_core", "aegis_strategy", "aegis_backtest", "aegis_ri
                       "aegis_metrics", "aegis_db", "aegis_config", "aegis_observability",
                       "aegis_execution", "aegis_ledger", "aegis_alerting", "api",
                       "market_collector", "position_monitor", "signal_service",
-                      "trading_runner"]
+                      "trading_runner", "market_streamer", "order_reconciler"]
 
 # ---------------------------------------------------------------------------
 # mypy

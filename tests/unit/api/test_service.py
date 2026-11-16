@@ -240,7 +240,7 @@ def test_journal_merges_trades_and_audit_events_newest_first() -> None:
     assert journal.count == 4
     assert [entry.kind for entry in journal.entries] == ["audit", "trade", "audit", "trade"]
     assert journal.entries[0].at == NOW
-    assert journal.entries[1].title == "BUY 0.5 BTC/USDT @ 30000.0000"
+    assert journal.entries[1].title == "BUY 0.5 BTC/USDT @ 30000.00"
     assert journal.entries[1].detail["fee"] == "0"
     assert journal.entries[0].title == "trade_recorded"
     assert journal.entries[0].detail["entity_id"] == "ord-1"

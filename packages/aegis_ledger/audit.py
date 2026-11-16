@@ -31,6 +31,7 @@ class EventType(StrEnum):
     ORDER_NOT_FILLED = "order_not_filled"
     TRADE_RECORDED = "trade_recorded"
     POSITION_UPDATED = "position_updated"
+    MANUAL_CLOSE = "manual_close"
 
 
 class AuditEvent(StrictModel):

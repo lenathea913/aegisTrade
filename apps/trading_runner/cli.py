@@ -35,7 +35,7 @@ from aegis_observability import configure_logging, get_logger
 from aegis_risk import RiskGate
 from order_reconciler.cli import reconcile_once
 from position_monitor.quotes import CandleQuoteSource, live_quote_source
-from signal_service import SignalService, SqlCandleRepository
+from signal_service import SignalService, SqlCandleRepository, SqlSignalStore
 from trading_runner.candles import SqlLatestCandleSource
 from trading_runner.runner import RunnerReport, TradingRunner, ensure_safe_execution_mode
 
@@ -104,6 +104,8 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         candles=SqlCandleRepository(factory, environment=settings.exchange.environment),
         symbols=settings.market_data.symbols,
         timeframe=settings.market_data.timeframes[0],
+        # Persisted, so a restart continues the same run instead of re-announcing bars.
+        store=SqlSignalStore(factory),
     )
     return TradingRunner(
         settings=settings,

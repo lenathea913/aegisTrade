@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
 
@@ -218,6 +219,103 @@ def test_ui_convert_swaps_in_a_draft_and_shows_rejection() -> None:
     assert "already converted" in again.text
 
 
+def test_convert_is_refused_while_a_position_is_open() -> None:
+    """The manual path must not pyramid either: 409, and the button is disabled."""
+    client, signals = build_client()
+    signal = client.post("/api/signals/generate").json()["signals"][0]
+
+    ledger = cast(Any, client.app).state.service.ledger
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_open",
+            symbol=SYMBOL,
+            side=Side.BUY,
+            qty=Decimal("0.06"),
+            price=Decimal("30000"),
+            fee=Decimal("0"),
+            filled_at=NOW,
+            strategy_id="simple_ema_cross",
+        )
+    )
+
+    response = client.post(f"/api/signals/{signal['signal_id']}/convert")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Cannot convert: position already open in this direction."
+    assert signals.get(signal["signal_id"]).status is SignalStatus.RISK_OK
+
+    detail = client.get(f"/partials/signals/{signal['signal_id']}")
+    assert "position already open" in detail.text
+    assert "disabled" in detail.text
+
+    listing = client.get("/partials/signals")
+    assert "position open" in listing.text
+
+
+def test_convert_succeeds_after_the_position_is_flat() -> None:
+    client, _ = build_client()
+    signal = client.post("/api/signals/generate").json()["signals"][0]
+    ledger = cast(Any, client.app).state.service.ledger
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_open",
+            symbol=SYMBOL,
+            side=Side.BUY,
+            qty=Decimal("0.06"),
+            price=Decimal("30000"),
+            fee=Decimal("0"),
+            filled_at=NOW,
+            strategy_id="simple_ema_cross",
+        )
+    )
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_close",
+            symbol=SYMBOL,
+            side=Side.SELL,
+            qty=Decimal("0.06"),
+            price=Decimal("30000"),
+            fee=Decimal("0"),
+            filled_at=NOW,
+            strategy_id="position_monitor",
+        )
+    )
+
+    response = client.post(f"/api/signals/{signal['signal_id']}/convert")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "DRAFT"
+
+
+def test_positions_page_offers_a_manual_close() -> None:
+    """The operator exit exists in the UI; without a session factory it reports why."""
+    client, _ = build_client()
+    ledger = cast(Any, client.app).state.service.ledger
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_open_ui",
+            symbol=SYMBOL,
+            side=Side.BUY,
+            qty=Decimal("0.06"),
+            price=Decimal("30000"),
+            fee=Decimal("0"),
+            filled_at=NOW,
+            strategy_id="simple_ema_cross",
+        )
+    )
+
+    body = client.get("/positions", headers={"accept": "text/html"}).text
+
+    assert "Close Position" in body
+    assert "/ui/positions/BTC/USDT/close" in body
+    assert "Close the whole BTC/USDT position" in body
+
+    response = client.post("/ui/positions/BTC/USDT/close")
+
+    assert response.status_code == 200
+    assert "trading is not configured" in response.text
+
+
 def test_journal_page_rounds_money_instead_of_printing_raw_decimals() -> None:
     """The regression from the first paper run: 0.03065... must render as 0.03."""
     trade = Trade(
@@ -247,8 +345,8 @@ def test_journal_page_rounds_money_instead_of_printing_raw_decimals() -> None:
 
     body = client.get("/journal", headers={"accept": "text/html"}).text
 
-    assert "BUY 0.03 BTC/USDT @ 30015.0000" in body
-    assert '"fee": "0.004502"' in body
+    assert "BUY 0.03 BTC/USDT @ 30015.00" in body
+    assert '"fee": "0.00450225"' in body
     assert "0.0045022500000000002" not in body
     assert "0.030000000000000001" not in body
 

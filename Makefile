@@ -12,7 +12,7 @@ export PYTHONPATH := packages$(PY_SEP)apps
 
 .DEFAULT: help
 .PHONY: help install install-hooks dev paper test test-unit test-integration cov \
-        cov-core lint fmt typecheck check migrate verify-db migration seed clean-db compose-dev compose-paper \
+        cov-core lint fmt typecheck check migrate verify-db migration seed clean-db paper-reset compose-dev compose-paper \
         compose-down docker-build logs clean tree monitor-once monitor-run \n        runner-once runner-start runner-paper
 
 help: ## Show available targets
@@ -71,6 +71,9 @@ seed: ## Load CSV seed market data into the database
 
 clean-db: ## Delete every stored candle (clears mixed seed/testnet history)
 	$(PY) scripts/clean_market_data.py --yes
+
+paper-reset: ## Archive trading.* + market.candles to JSON, then empty them (audit log kept)
+	$(PY) scripts/paper_reset.py --yes
 
 seed-data: ## Regenerate the deterministic synthetic candle CSV (demo data)
 	$(PY) scripts/generate_synthetic_data.py

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-__all__ = ["SignalError", "SignalNotFoundError", "SignalRiskRejectedError", "SignalStateError"]
+__all__ = [
+    "SignalError",
+    "SignalNotFoundError",
+    "SignalPositionOpenError",
+    "SignalRiskRejectedError",
+    "SignalStateError",
+]
 
 
 class SignalError(Exception):
@@ -15,6 +21,18 @@ class SignalNotFoundError(SignalError):
 
 class SignalStateError(SignalError):
     """The signal cannot change the way the caller asked (409/400)."""
+
+
+class SignalPositionOpenError(SignalError):
+    """A position is already open in this direction, so converting would pyramid (409).
+
+    The runner enforces the same rule before it trades; this is the API/UI half, so an
+    operator clicking "convert" cannot do what the daemon refuses to do.
+    """
+
+    def __init__(self, symbol: str) -> None:
+        self.symbol = symbol
+        super().__init__("Cannot convert: position already open in this direction.")
 
 
 class SignalRiskRejectedError(SignalError):

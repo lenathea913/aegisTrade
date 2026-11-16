@@ -32,6 +32,7 @@ from aegis_core import (
     OrderIntent,
     OrderType,
     RiskDecision,
+    Side,
     Signal,
     SignalDirection,
     SignalStatus,
@@ -43,6 +44,7 @@ from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
 from signal_service.errors import (
     SignalNotFoundError,
+    SignalPositionOpenError,
     SignalRiskRejectedError,
     SignalStateError,
 )
@@ -196,6 +198,10 @@ class SignalService:
             raise SignalStateError("an ignored signal cannot be converted")
         if signal.status is SignalStatus.CONVERTED:
             raise SignalStateError("signal was already converted")
+        if self._holds_direction(signal.symbol, signal.direction.side):
+            # Same rule as the runner: an open position in this direction must be
+            # closed by its stop/target before the idea may be entered again.
+            raise SignalPositionOpenError(signal.symbol)
 
         intent = self._intent_for(signal, now)
         decision = self._gate.evaluate(
@@ -208,6 +214,14 @@ class SignalService:
         converted = signal.with_status(SignalStatus.CONVERTED)
         self._store.update(converted)
         return ConversionResult(signal=converted, intent=intent, decision=decision)
+
+    def _holds_direction(self, symbol: str, side: Side) -> bool:
+        """True when ``symbol`` already holds a non-flat position on ``side``."""
+        position = self._ledger.position(symbol)
+        if position.is_flat:
+            return False
+        held = Side.BUY if position.qty > 0 else Side.SELL
+        return held is side
 
     def ignore(self, signal_id: str) -> Signal:
         signal = self.get(signal_id)

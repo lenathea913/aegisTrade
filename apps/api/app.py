@@ -29,16 +29,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from aegis_config import Settings, load_settings
 from aegis_core import __version__, get_random_motivation
+from aegis_core.types import normalise_symbol
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
 from aegis_execution import ExchangeError, build_broker
-from aegis_ledger import LedgerError, PortfolioLedger
+from aegis_ledger import LedgerError, LedgerStore, PortfolioLedger
 from aegis_observability import CONTENT_TYPE_LATEST, Metrics, configure_logging, get_logger
 from aegis_risk import RiskGate
 from api.exchange import cancel_order, open_orders
-from api.formatting import clean_payload, money, price, qty
+from api.formatting import clean_payload, fee, money, price, qty
 from api.repository import SqlTradingRepository
 from api.schemas import (
     CancelOrderResponse,
+    ClosePositionResponse,
     ConversionResponse,
     ExchangeOrderListResponse,
     ExchangeOrderResponse,
@@ -52,12 +54,17 @@ from api.schemas import (
 )
 from api.security import ApiTokenGuard, install_api_token_middleware
 from api.service import ApiService
+from api.trading import CloseRequestError
+from api.trading import close_position as close_via_gate
+from position_monitor.quotes import CandleQuoteSource
 from signal_service import (
     SignalNotFoundError,
+    SignalPositionOpenError,
     SignalRiskRejectedError,
     SignalService,
     SignalStateError,
     SqlCandleRepository,
+    SqlSignalStore,
 )
 
 __all__ = ["create_app"]
@@ -106,7 +113,13 @@ def _wants_html(request: Request) -> bool:
 TEMPLATES = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 # Rounding lives in `api.formatting`: the templates never print a raw Decimal.
 TEMPLATES.env.filters.update(
-    {"money": money, "price": price, "qty": qty, "clean_payload": clean_payload}
+    {
+        "money": money,
+        "price": price,
+        "qty": qty,
+        "fee": fee,
+        "clean_payload": clean_payload,
+    }
 )
 
 
@@ -145,7 +158,14 @@ def create_app(
             candles=SqlCandleRepository(session_factory, environment=settings.exchange.environment),
             symbols=settings.market_data.symbols,
             timeframe=settings.market_data.timeframes[0],
+            store=SqlSignalStore(session_factory),
         )
+
+    quotes = (
+        CandleQuoteSource(session_factory, environment=settings.exchange.environment)
+        if session_factory is not None
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -179,6 +199,52 @@ def create_app(
         return templates.TemplateResponse(
             request, name, {"exchange": service.exchange_status(), **context}
         )
+
+    def _open_sides() -> dict[str, str]:
+        """Symbol -> the side currently held (``BUY`` long, ``SELL`` short)."""
+        return {
+            position.symbol: ("BUY" if position.qty > 0 else "SELL")
+            for position in service.ledger.positions
+            if not position.is_flat
+        }
+
+    def _position_block(signal: Any) -> str | None:
+        """Why converting this signal would pyramid, or ``None`` when it may proceed."""
+        held = _open_sides().get(signal.symbol)
+        if held is not None and held == signal.direction.side.value:
+            return "Cannot convert: position already open in this direction."
+        return None
+
+    def _perform_close(symbol: str) -> Any:
+        """Close a position through the gate, recording a ``manual_close`` audit event.
+
+        The intent is an ordinary MARKET order on the opposite side for the whole
+        quantity, judged like anything else and recognised as risk-reducing (ADR 0009),
+        so exposure caps cannot trap an operator in a position they asked to leave.
+        """
+        if session_factory is None or quotes is None:
+            raise HTTPException(status_code=503, detail="trading is not configured")
+        wanted = normalise_symbol(symbol)
+        try:
+            with session_scope(session_factory) as session:
+                result = close_via_gate(
+                    settings=settings,
+                    ledger=service.ledger,
+                    quotes=quotes,
+                    writer=LedgerStore(session),
+                    symbol=wanted,
+                )
+        except CloseRequestError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (LedgerError, SQLAlchemyError) as exc:
+            raise HTTPException(status_code=503, detail=f"close failed: {exc}") from exc
+
+        if not result.decision.approved:
+            raise HTTPException(
+                status_code=409,
+                detail="risk engine refused the close: " + "; ".join(result.reasons),
+            )
+        return result
 
     app.state.settings = settings
     app.state.service = service
@@ -295,8 +361,27 @@ def create_app(
         response = service.positions()
         metrics.set_equity(Decimal(service.risk_budget().equity))
         if _wants_html(request):
-            return _render(request, "positions.html", {"positions": response})
+            return _render(request, "positions.html", {"positions": response, "message": None})
         return JSONResponse(content=response.model_dump(mode="json"))
+
+    @app.post(
+        "/api/positions/{symbol:path}/close",
+        response_model=ClosePositionResponse,
+        tags=["portfolio"],
+    )
+    def close_position(symbol: str) -> ClosePositionResponse:
+        """Close an open position through the risk gate (``manual_close`` audit)."""
+        result = _perform_close(symbol)
+        return ClosePositionResponse(
+            symbol=result.intent.symbol,
+            side=result.intent.side.value,
+            qty=str(result.intent.qty),
+            price=None if result.intent.price is None else str(result.intent.price),
+            approved=result.decision.approved,
+            filled=result.filled,
+            order_id=None if result.execution is None else result.execution.order.order_id,
+            reasons=list(result.decision.reasons),
+        )
 
     @app.get("/risk/budget", response_model=RiskBudgetResponse, tags=["risk"])
     def risk_budget() -> RiskBudgetResponse:
@@ -360,7 +445,10 @@ def create_app(
             raise HTTPException(
                 status_code=503, detail="exchange is not connected; conversion is disabled"
             )
-        conversion = _signals().convert(signal_id)
+        try:
+            conversion = _signals().convert(signal_id)
+        except SignalPositionOpenError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return ConversionResponse(
             signal=SignalResponse.from_domain(conversion.signal),
             intent=IntentResponse.from_domain(conversion.intent),
@@ -396,7 +484,9 @@ def create_app(
             "signals.html",
             {
                 "signals": items,
+                "open_sides": _open_sides(),
                 "selected": selected,
+                "blocked_reason": _position_block(selected) if selected else None,
                 "preview": service_.risk_preview(selected) if selected else None,
             },
         )
@@ -458,13 +548,41 @@ def create_app(
 
     @app.get("/partials/positions", include_in_schema=False)
     def positions_partial(request: Request) -> Response:
-        return _render(request, "partials/positions.html", {"positions": service.positions()})
+        return _render(
+            request,
+            "partials/positions.html",
+            {"positions": service.positions(), "message": None},
+        )
+
+    @app.post("/ui/positions/{symbol:path}/close", include_in_schema=False)
+    def close_position_from_ui(request: Request, symbol: str) -> Response:
+        """Operator exit from the dashboard; failures are shown, not raised as HTML."""
+        message: str
+        try:
+            result = _perform_close(symbol)
+        except HTTPException as exc:
+            message = str(exc.detail)
+        else:
+            filled = "yes" if result.filled else "no"
+            message = (
+                f"Close sent: {result.intent.side.value} {result.intent.qty} "
+                f"{result.intent.symbol} (filled: {filled})."
+            )
+        return _render(
+            request,
+            "partials/positions.html",
+            {"positions": service.positions(), "message": message},
+        )
 
     @app.get("/partials/signals", include_in_schema=False)
     def signals_partial(request: Request) -> Response:
         service_ = _signals()
         items = service_.list_signals()
-        return _render(request, "partials/signals.html", {"signals": items})
+        return _render(
+            request,
+            "partials/signals.html",
+            {"signals": items, "open_sides": _open_sides()},
+        )
 
     @app.get("/partials/signals/{signal_id}", include_in_schema=False)
     def signal_detail_partial(request: Request, signal_id: str) -> Response:
@@ -475,6 +593,8 @@ def create_app(
             "partials/signal_detail.html",
             {
                 "selected": signal,
+                "open_sides": _open_sides(),
+                "blocked_reason": _position_block(signal),
                 "preview": service_.risk_preview(signal),
                 "message": None,
                 "conversion": None,
@@ -492,6 +612,8 @@ def create_app(
         else:
             try:
                 conversion = service_.convert(signal_id)
+            except SignalPositionOpenError as exc:
+                message = str(exc)
             except SignalRiskRejectedError as exc:
                 message = "Risk engine refused this signal: " + "; ".join(exc.reasons)
             except SignalStateError as exc:
@@ -502,6 +624,8 @@ def create_app(
             "partials/signal_detail.html",
             {
                 "selected": signal,
+                "open_sides": _open_sides(),
+                "blocked_reason": _position_block(signal),
                 "preview": service_.risk_preview(signal),
                 "message": message,
                 "conversion": conversion,
@@ -522,6 +646,8 @@ def create_app(
             "partials/signal_detail.html",
             {
                 "selected": signal,
+                "open_sides": _open_sides(),
+                "blocked_reason": _position_block(signal),
                 "preview": service_.risk_preview(signal),
                 "message": message,
                 "conversion": None,
@@ -533,7 +659,11 @@ def create_app(
         service_ = _signals()
         service_.generate()
         items = service_.list_signals()
-        return _render(request, "partials/signals.html", {"signals": items})
+        return _render(
+            request,
+            "partials/signals.html",
+            {"signals": items, "open_sides": _open_sides()},
+        )
 
     if settings.observability.metrics_enabled:
 

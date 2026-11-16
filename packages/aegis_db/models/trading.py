@@ -1,4 +1,4 @@
-"""``trading.*``: orders, positions and executed trades.
+"""``trading.*``: orders, positions, executed trades and signals.
 
 These tables are written by the execution gateway and the portfolio ledger. Enum
 columns are stored as short ``VARCHAR`` with CHECK constraints rather than native
@@ -20,6 +20,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -27,11 +28,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from aegis_core.enums import OrderStatus, OrderType, Side
+from aegis_core.signal import SignalDirection, SignalStatus
 from aegis_db.base import Base, TimestampMixin
 
 _SIDE_SQL = ", ".join(f"'{side.value}'" for side in Side)
 _ORDER_TYPE_SQL = ", ".join(f"'{order_type.value}'" for order_type in OrderType)
 _STATUS_SQL = ", ".join(f"'{status.value}'" for status in OrderStatus)
+_DIRECTION_SQL = ", ".join(f"'{direction.value}'" for direction in SignalDirection)
+_SIGNAL_STATUS_SQL = ", ".join(f"'{status.value}'" for status in SignalStatus)
 
 
 class OrderRecord(Base, TimestampMixin):
@@ -151,3 +155,52 @@ class TradeRecord(Base):
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False)
     r_multiple: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
+
+
+class SignalRecord(Base):
+    """One trading idea, keyed by the closed bar that produced it.
+
+    Generation is deterministic — one bar closes, one idea — so an idea is unique per
+    ``(strategy_id, symbol, timeframe, bar_close_time)``. That key is what makes a
+    restart idempotent: the rerun of the same bar upserts into the row that already
+    exists, and a signal the operator already converted or ignored stays that way.
+    """
+
+    __tablename__ = "signals"
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_id",
+            "symbol",
+            "timeframe",
+            "bar_close_time",
+            name="uq_signals_idea_bar",
+        ),
+        CheckConstraint(f"direction IN ({_DIRECTION_SQL})", name="ck_signals_direction_known"),
+        CheckConstraint(f"status IN ({_SIGNAL_STATUS_SQL})", name="ck_signals_status_known"),
+        CheckConstraint("entry_ref > 0", name="ck_signals_entry_ref_positive"),
+        CheckConstraint("stop_loss > 0", name="ck_signals_stop_loss_positive"),
+        CheckConstraint("take_profit > 0", name="ck_signals_take_profit_positive"),
+        CheckConstraint("risk_reward > 0", name="ck_signals_risk_reward_positive"),
+        CheckConstraint("expires_at > created_at", name="ck_signals_expiry_after_creation"),
+        Index("ix_signals_symbol_created_at", "symbol", "created_at"),
+        Index("ix_signals_status", "status"),
+        {"schema": "trading"},
+    )
+
+    signal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(8), nullable=False)
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    entry_ref: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    stop_loss: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    take_profit: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    risk_reward: Mapped[Decimal] = mapped_column(Numeric(28, 12), nullable=False)
+    bar_close_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason_codes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    market_context: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    status_reasons: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

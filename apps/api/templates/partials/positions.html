@@ -1,3 +1,9 @@
+{% if message %}
+<p class="mb-3 rounded border border-slate-700 bg-slate-900/60 p-2 text-sm text-slate-200">
+  {{ message }}
+</p>
+{% endif %}
+
 {% if positions.count == 0 %}
 <p class="rounded border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-400">
   No open positions. A flat book is a valid state, not a missing feature.
@@ -14,6 +20,7 @@
         <th class="px-4 py-2">Notional</th>
         <th class="px-4 py-2">Unrealized</th>
         <th class="px-4 py-2">Realized</th>
+        <th class="px-4 py-2 text-right">Action</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-slate-800">
@@ -25,14 +32,25 @@
             {{ position.side }}
           </span>
         </td>
-        <td class="px-4 py-2 font-mono">{{ position.qty | qty }}</td>
-        <td class="px-4 py-2 font-mono">{{ position.avg_entry | price }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.qty | qty(position.symbol) }}</td>
+        <td class="px-4 py-2 font-mono">{{ position.avg_entry | price(position.symbol) }}</td>
         <td class="px-4 py-2 font-mono">{{ position.notional | money }}</td>
         {% set unrealized = position.unrealized_pnl | money %}
         <td class="px-4 py-2 font-mono {{ 'text-rose-300' if unrealized.startswith('-') else 'text-emerald-300' }}">
           {{ unrealized }}
         </td>
         <td class="px-4 py-2 font-mono">{{ position.realized_pnl | money }}</td>
+        <td class="px-4 py-2 text-right">
+          <button
+            class="rounded border border-rose-500/40 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/10"
+            hx-post="/ui/positions/{{ position.symbol | urlencode }}/close"
+            hx-target="#positions-panel"
+            hx-swap="innerHTML"
+            hx-confirm="Close the whole {{ position.symbol }} position at the latest stored price? It still goes through the risk engine."
+          >
+            Close Position
+          </button>
+        </td>
       </tr>
       {% endfor %}
     </tbody>

@@ -25,6 +25,7 @@ EXPECTED_TABLES = {
     ("trading", "orders"),
     ("trading", "positions"),
     ("trading", "trades"),
+    ("trading", "signals"),
     ("audit", "audit_logs"),
 }
 

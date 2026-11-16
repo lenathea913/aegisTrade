@@ -17,11 +17,19 @@
         <span class="rounded px-2 py-0.5 text-xs {{ 'bg-emerald-500/10 text-emerald-300' if signal.direction == 'LONG' else 'bg-rose-500/10 text-rose-300' }}">
           {{ signal.direction }}
         </span>
+        {% set held = open_sides.get(signal.symbol) if open_sides else none %}
+        {% if held and held == signal.direction.side.value %}
+        <span
+          class="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-200"
+          title="Cannot convert: position already open in this direction."
+        >position open</span>
+        {% endif %}
         <span class="ml-auto rounded px-2 py-0.5 text-xs {{ tone }}">{{ signal.status }}</span>
       </div>
       <div class="mt-1 font-mono text-xs text-slate-400">
-        entry {{ signal.entry_ref | price }} · stop {{ signal.stop_loss | price }} · target
-        {{ signal.take_profit | price }} · R:R {{ signal.risk_reward | money }}
+        entry {{ signal.entry_ref | price(signal.symbol) }} · stop
+        {{ signal.stop_loss | price(signal.symbol) }} · target
+        {{ signal.take_profit | price(signal.symbol) }} · R:R {{ signal.risk_reward | money }}
       </div>
       <div class="mt-1 text-xs text-slate-500">
         {{ signal.created_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC

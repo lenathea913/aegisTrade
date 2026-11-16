@@ -9,6 +9,7 @@ from __future__ import annotations
 from signal_service.errors import (
     SignalError,
     SignalNotFoundError,
+    SignalPositionOpenError,
     SignalRiskRejectedError,
     SignalStateError,
 )
@@ -19,7 +20,7 @@ from signal_service.service import (
     ConversionResult,
     SignalService,
 )
-from signal_service.store import InMemorySignalStore, SignalStore
+from signal_service.store import InMemorySignalStore, SignalStore, SqlSignalStore
 
 __all__ = [
     "DEFAULT_HISTORY_BARS",
@@ -29,9 +30,11 @@ __all__ = [
     "InMemorySignalStore",
     "SignalError",
     "SignalNotFoundError",
+    "SignalPositionOpenError",
     "SignalRiskRejectedError",
     "SignalService",
     "SignalStateError",
     "SignalStore",
     "SqlCandleRepository",
+    "SqlSignalStore",
 ]

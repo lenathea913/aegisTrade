@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from aegis_db.models.audit import AuditLog
 from aegis_db.models.market import Candle
-from aegis_db.models.trading import OrderRecord, PositionRecord, TradeRecord
+from aegis_db.models.trading import OrderRecord, PositionRecord, SignalRecord, TradeRecord
 
-__all__ = ["AuditLog", "Candle", "OrderRecord", "PositionRecord", "TradeRecord"]
+__all__ = [
+    "AuditLog",
+    "Candle",
+    "OrderRecord",
+    "PositionRecord",
+    "SignalRecord",
+    "TradeRecord",
+]

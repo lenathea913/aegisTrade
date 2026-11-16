@@ -7,7 +7,14 @@ Schemas: ``market`` (candles), ``trading`` (orders, positions, trades) and
 from __future__ import annotations
 
 from aegis_db.base import NAMING_CONVENTION, Base, TimestampMixin
-from aegis_db.models import AuditLog, Candle, OrderRecord, PositionRecord, TradeRecord
+from aegis_db.models import (
+    AuditLog,
+    Candle,
+    OrderRecord,
+    PositionRecord,
+    SignalRecord,
+    TradeRecord,
+)
 from aegis_db.session import (
     create_engine_from_settings,
     create_session_factory,
@@ -21,6 +28,7 @@ __all__ = [
     "Candle",
     "OrderRecord",
     "PositionRecord",
+    "SignalRecord",
     "TimestampMixin",
     "TradeRecord",
     "create_engine_from_settings",

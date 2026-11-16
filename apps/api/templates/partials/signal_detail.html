@@ -6,9 +6,9 @@
 </div>
 
 <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Entry ref</dt><dd class="font-mono">{{ selected.entry_ref | price }}</dd></div>
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Stop</dt><dd class="font-mono">{{ selected.stop_loss | price }}</dd></div>
-  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Take profit</dt><dd class="font-mono">{{ selected.take_profit | price }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Entry ref</dt><dd class="font-mono">{{ selected.entry_ref | price(selected.symbol) }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Stop</dt><dd class="font-mono">{{ selected.stop_loss | price(selected.symbol) }}</dd></div>
+  <div><dt class="text-xs uppercase tracking-wide text-slate-500">Take profit</dt><dd class="font-mono">{{ selected.take_profit | price(selected.symbol) }}</dd></div>
   <div><dt class="text-xs uppercase tracking-wide text-slate-500">Risk / reward</dt><dd class="font-mono">{{ selected.risk_reward | money }}</dd></div>
   <div><dt class="text-xs uppercase tracking-wide text-slate-500">Strategy</dt><dd>{{ selected.strategy_id }} v{{ selected.strategy_version }}</dd></div>
   <div><dt class="text-xs uppercase tracking-wide text-slate-500">Expires</dt><dd class="font-mono text-xs">{{ selected.expires_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</dd></div>
@@ -35,14 +35,21 @@
 </p>
 {% endif %}
 
+{% if blocked_reason %}
+<p class="mt-4 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+  {{ blocked_reason }} Close the position (or let its stop/target fire) before converting
+  another entry in this direction.
+</p>
+{% endif %}
+
 <div class="mt-4 flex flex-wrap gap-2">
   <button
     class="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
     hx-post="/ui/signals/{{ selected.signal_id }}/convert"
     hx-target="#signal-detail"
     hx-swap="innerHTML"
-    {% if not selected.is_actionable or (exchange and not exchange.connected) %}disabled{% endif %}
-    title="{% if exchange and not exchange.connected %}exchange offline{% endif %}"
+    {% if blocked_reason or not selected.is_actionable or (exchange and not exchange.connected) %}disabled{% endif %}
+    title="{% if blocked_reason %}{{ blocked_reason }}{% elif exchange and not exchange.connected %}exchange offline{% endif %}"
   >
     Convert to draft intent
   </button>
@@ -65,9 +72,11 @@
 <div class="mt-4 rounded border border-emerald-500/30 bg-emerald-500/5 p-3">
   <h3 class="text-xs uppercase tracking-wide text-emerald-300">Draft intent — not executed</h3>
   <p class="mt-1 font-mono text-xs text-slate-300">
-    {{ conversion.intent.side }} {{ conversion.intent.qty | qty }} {{ conversion.intent.symbol }}
-    @ {{ conversion.intent.price | price }} · stop {{ conversion.intent.stop_loss | price }} · target
-    {{ conversion.intent.take_profit | price }}
+    {{ conversion.intent.side }} {{ conversion.intent.qty | qty(conversion.intent.symbol) }}
+    {{ conversion.intent.symbol }}
+    @ {{ conversion.intent.price | price(conversion.intent.symbol) }} · stop
+    {{ conversion.intent.stop_loss | price(conversion.intent.symbol) }} · target
+    {{ conversion.intent.take_profit | price(conversion.intent.symbol) }}
   </p>
   <p class="mt-2 text-xs text-slate-400">
     max risk {{ conversion.decision.max_risk_amount | money }} · checks:

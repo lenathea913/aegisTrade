@@ -217,7 +217,10 @@ def _trade_entry(trade: Trade) -> JournalEntryResponse:
         kind="trade",
         at=trade.filled_at,
         # Formatted here as well as in the template: the title is text, not a number.
-        title=f"{trade.side.value} {qty(trade.qty)} {trade.symbol} @ {price(trade.price)}",
+        title=(
+            f"{trade.side.value} {qty(trade.qty, trade.symbol)} {trade.symbol} "
+            f"@ {price(trade.price, trade.symbol)}"
+        ),
         detail={
             "trade_id": trade.trade_id,
             "order_id": trade.order_id,

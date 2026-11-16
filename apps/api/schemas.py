@@ -229,6 +229,19 @@ class CancelOrderResponse(BaseModel):
     cancelled: Literal[True] = True
 
 
+class ClosePositionResponse(BaseModel):
+    """What the manual close did: an opposite-side intent walked through the gate."""
+
+    symbol: str
+    side: str
+    qty: str
+    price: str | None
+    approved: bool
+    filled: bool
+    order_id: str | None
+    reasons: list[str]
+
+
 class ConversionResponse(BaseModel):
     """Result of converting a signal: a draft intent plus the gate's checks."""
 

@@ -16,6 +16,7 @@ from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
 from signal_service import (
     SignalNotFoundError,
+    SignalPositionOpenError,
     SignalRiskRejectedError,
     SignalService,
     SignalStateError,
@@ -204,6 +205,60 @@ def test_conversion_reruns_the_gate_and_can_be_refused() -> None:
 
     assert any(reason.startswith("daily_loss_limit_reached") for reason in excinfo.value.reasons)
     assert service.get(signal.signal_id).status is SignalStatus.BLOCKED_BY_RISK
+
+
+def open_position(ledger: PortfolioLedger, *, at: datetime) -> None:
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_open",
+            symbol=SYMBOL,
+            side=Side.BUY,
+            qty=Decimal("0.1"),
+            price=Decimal("30000"),
+            fee=Decimal("0"),
+            filled_at=at,
+            strategy_id="simple_ema_cross",
+        )
+    )
+
+
+def test_conversion_is_refused_while_a_position_is_open() -> None:
+    """The API/UI half of the anti-pyramiding rule the runner already enforces."""
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    service, _, _ = build_service(ledger=ledger)
+    signal = service.generate()[0]
+    assert signal.status is SignalStatus.RISK_OK
+    open_position(ledger, at=signal.created_at)
+
+    with pytest.raises(SignalPositionOpenError, match="position already open"):
+        service.convert(signal.signal_id)
+
+    # Refused, not consumed: the idea is still RISK_OK for a retry after the exit.
+    assert service.get(signal.signal_id).status is SignalStatus.RISK_OK
+
+
+def test_conversion_works_again_once_the_position_is_flat() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    service, _, _ = build_service(ledger=ledger)
+    signal = service.generate()[0]
+    open_position(ledger, at=signal.created_at)
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_close",
+            symbol=SYMBOL,
+            side=Side.SELL,
+            qty=Decimal("0.1"),
+            price=Decimal("30000"),
+            fee=Decimal("0"),
+            filled_at=signal.created_at + timedelta(seconds=1),
+            strategy_id="position_monitor",
+        )
+    )
+
+    conversion = service.convert(signal.signal_id)
+
+    assert conversion.signal.status is SignalStatus.CONVERTED
+    assert ledger.position(SYMBOL).is_flat
 
 
 def test_converting_twice_is_refused() -> None:

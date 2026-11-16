@@ -94,6 +94,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    # The image's HEALTHCHECK probes the API port; this process serves no HTTP,
+    # so inheriting it would mark a perfectly healthy collector as unhealthy
+    # (and `docker compose up --wait` would never return).
+    healthcheck:
+      disable: true
 
   prometheus:
     image: prom/prometheus:v2.55.1

@@ -50,6 +50,8 @@ class PositionRow(Protocol):
     realized_pnl: Any
     opened_at: Any
     leverage: int
+    stop_loss: Any
+    take_profit: Any
 
 
 def order_row(order: Order, approved: ApprovedOrder) -> dict[str, Any]:
@@ -105,6 +107,10 @@ def position_row(position: Position) -> dict[str, Any]:
         "realized_pnl": position.realized_pnl,
         "opened_at": position.opened_at,
         "leverage": position.leverage,
+        # Stored with the position, not in a side table: a restart must find the stop
+        # exactly where the exposure is, and a flat row can carry neither.
+        "stop_loss": position.stop_loss,
+        "take_profit": position.take_profit,
     }
 
 
@@ -137,6 +143,8 @@ def position_from_row(row: PositionRow) -> Position:
         realized_pnl=row.realized_pnl,
         opened_at=row.opened_at,
         leverage=getattr(row, "leverage", 1),
+        stop_loss=getattr(row, "stop_loss", None),
+        take_profit=getattr(row, "take_profit", None),
     )
 
 

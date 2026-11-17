@@ -19,15 +19,26 @@ from typing import Any, cast
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from aegis_alerting import Alerter, build_alerter
 from aegis_config import Settings, load_settings
+from aegis_core import utc_now
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
 from aegis_execution import ExchangeOrderState, build_broker
-from aegis_ledger import LedgerError, LedgerStore, PortfolioLedger
+from aegis_ledger import AuditEvent, EventType, LedgerError, LedgerStore, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
+from order_reconciler.positions import PositionDrift, PositionReconciler, VenueLeg
 from order_reconciler.reconciler import OrderReconciler, ReconciliationResult
 from order_reconciler.repository import SqlOrderBook
+from order_reconciler.state import SqlReconciliationState
 
-__all__ = ["build_reconciler", "main", "reconcile_once", "result_payload"]
+__all__ = [
+    "acknowledge_drift",
+    "build_reconciler",
+    "main",
+    "reconcile_once",
+    "reconcile_positions_once",
+    "result_payload",
+]
 
 
 class _BrokerFeed:
@@ -38,6 +49,16 @@ class _BrokerFeed:
 
     def fetch(self, exchange_order_id: str, *, symbol: str) -> ExchangeOrderState:
         return cast(ExchangeOrderState, self._broker.fetch(exchange_order_id, symbol=symbol))
+
+
+class _PositionFeed:
+    """Adapts a futures broker to ``VenuePositionFeed``."""
+
+    def __init__(self, broker: Any) -> None:
+        self._broker = broker
+
+    def fetch_positions(self) -> tuple[VenueLeg, ...]:
+        return cast(tuple[VenueLeg, ...], self._broker.fetch_positions())
 
 
 def build_reconciler(
@@ -96,6 +117,96 @@ def reconcile_once(
             close()
 
 
+def reconcile_positions_once(
+    settings: Settings,
+    factory: sessionmaker[Session],
+    ledger: PortfolioLedger,
+    *,
+    broker: Any = None,
+    alerter: Alerter | None = None,
+) -> tuple[PositionDrift, ...]:
+    """Compare the book with the venue once, recording the verdict durably.
+
+    Paper has no venue to disagree with, so it is skipped rather than reported as
+    synced; a broker without ``fetch_positions`` (spot) is skipped for the same reason.
+    """
+    logger = get_logger("aegis.position_reconciler")
+    if settings.execution.broker == "paper":
+        return ()
+
+    owns_broker = broker is None
+    if broker is None:
+        broker = build_broker(
+            settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
+        )
+    try:
+        if not callable(getattr(broker, "fetch_positions", None)):
+            logger.info(
+                "position_reconcile_skipped",
+                reason="broker exposes no positions (spot does not need this)",
+            )
+            return ()
+        reconciler = PositionReconciler(
+            ledger=ledger,
+            venue=_PositionFeed(broker),
+            state=SqlReconciliationState(factory),
+            alerter=alerter if alerter is not None else build_alerter(settings.alerting),
+        )
+        drifts = reconciler.run()
+        if drifts:
+            with session_scope(factory) as session:
+                store = LedgerStore(session)
+                for drift in drifts:
+                    store.append_audit(
+                        AuditEvent(
+                            event_type=EventType.POSITION_DRIFT_DETECTED,
+                            entity_type="position",
+                            entity_id=drift.symbol,
+                            actor="position_reconciler",
+                            payload=drift.as_payload(),
+                        )
+                    )
+        return drifts
+    finally:
+        if owns_broker:
+            close = getattr(broker, "close", None)
+            if callable(close):
+                close()
+
+
+def acknowledge_drift(settings: Settings, factory: sessionmaker[Session]) -> bool:
+    """Clear the halt flag after an operator has reconciled the book by hand.
+
+    Returns ``True`` when a halt was actually cleared. The clearance is audited, because
+    "a human said it was fine" is exactly the kind of decision that must be traceable.
+    """
+    store = SqlReconciliationState(factory)
+    snapshot = store.load()
+    if not snapshot.entries_halted:
+        return False
+    now = utc_now()
+    store.acknowledge(now)
+    with session_scope(factory) as session:
+        LedgerStore(session).append_audit(
+            AuditEvent(
+                event_type=EventType.POSITION_DRIFT_ACKNOWLEDGED,
+                entity_type="reconciliation_state",
+                entity_id="singleton",
+                actor="operator",
+                payload={
+                    "drift_count": snapshot.drift_count,
+                    "detail": list(snapshot.detail),
+                    "cleared_at": now.isoformat(),
+                },
+            )
+        )
+    get_logger("aegis.position_reconciler").warning(
+        "position_drift_acknowledged", drift_count=snapshot.drift_count
+    )
+    _ = settings
+    return True
+
+
 def _run_once(
     settings: Settings, factory: sessionmaker[Session], broker: Any, ledger: PortfolioLedger
 ) -> tuple[ReconciliationResult, ...]:
@@ -106,28 +217,52 @@ def _run_once(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AegisTrade order reconciler")
     parser.add_argument("--once", action="store_true", help="one pass, then exit")
+    parser.add_argument(
+        "--acknowledge-drift",
+        action="store_true",
+        help="clear the entries-halted flag after reconciling the book by hand",
+    )
     args = parser.parse_args(argv)
 
     settings = load_settings()
     configure_logging(settings.observability)
     logger = get_logger("aegis.order_reconciler")
 
+    engine = create_engine_from_settings(settings.database)
+    factory = create_session_factory(engine)
+
+    if args.acknowledge_drift:
+        cleared = acknowledge_drift(settings, factory)
+        logger.warning(
+            "position_drift_acknowledge_requested",
+            cleared=cleared,
+            detail=(
+                "entries are allowed again; the next comparison re-checks the venue"
+                if cleared
+                else "no drift was blocking entries"
+            ),
+        )
+        engine.dispose()
+        return 0
+
     if settings.execution.broker == "paper":
         logger.warning(
             "reconciler_skipped",
             detail="paper broker fills synchronously; there is nothing to reconcile",
         )
+        engine.dispose()
         return 0
 
-    engine = create_engine_from_settings(settings.database)
-    factory = create_session_factory(engine)
     ledger = PortfolioLedger(initial_equity=settings.risk.initial_equity)
     _restore_ledger(ledger, factory)
     logger.info(
         "reconciler_started",
         broker=settings.execution.broker,
         interval_seconds=settings.reconciler.interval_seconds,
+        position_interval_seconds=settings.reconciler.position_interval_seconds,
     )
+    position_interval = settings.reconciler.position_interval_seconds
+    next_position_check = 0.0
     try:
         while True:
             results = reconcile_once(settings, factory, ledger)
@@ -137,6 +272,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     json.dumps([result_payload(item) for item in changed], sort_keys=True),
                     file=sys.stdout,
                 )
+            # Orders poll every few seconds; the position comparison has its own,
+            # slower cadence (one minute by default) and its own cost.
+            if time.monotonic() >= next_position_check:
+                drifts = reconcile_positions_once(settings, factory, ledger)
+                next_position_check = time.monotonic() + position_interval
+                if drifts:
+                    print(
+                        json.dumps([drift.as_payload() for drift in drifts], sort_keys=True),
+                        file=sys.stdout,
+                    )
             if args.once:
                 return 0
             time.sleep(settings.reconciler.interval_seconds)

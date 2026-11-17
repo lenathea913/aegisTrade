@@ -11,14 +11,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -102,6 +105,14 @@ class PositionRecord(Base):
             "(qty <> 0 AND avg_entry > 0) OR (qty = 0 AND avg_entry = 0)",
             name="ck_positions_flat_has_no_basis",
         ),
+        # The stop belongs to an open leg: a flat row must not keep one, or a restart
+        # would watch an exit for exposure that no longer exists.
+        CheckConstraint(
+            "(qty = 0 AND stop_loss IS NULL AND take_profit IS NULL) OR "
+            "(qty <> 0 AND (stop_loss IS NULL OR stop_loss > 0) "
+            "AND (take_profit IS NULL OR take_profit > 0))",
+            name="ck_positions_protection_matches_exposure",
+        ),
         {"schema": "trading"},
     )
 
@@ -119,9 +130,52 @@ class PositionRecord(Base):
     #: Margin multiplier of the open leg (1 = spot). Display and ROE only: PnL on a
     #: linear contract is independent of leverage.
     leverage: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    #: Protective levels of the open leg. Persisted here so a restart can re-arm the
+    #: position monitor instead of leaving the position unprotected.
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
+    take_profit: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ReconciliationStateRecord(Base):
+    """One row: whether the ledger still agrees with the venue.
+
+    The flag lives in the database, not in a process, because "no entries until an
+    operator looks" has to survive the restart that a drift usually causes. The row is
+    a singleton (``id = 1``) updated in place; history lives in the audit log.
+    """
+
+    __tablename__ = "reconciliation_state"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_reconciliation_state_singleton"),
+        CheckConstraint(
+            "status IN ('synced', 'drift', 'unchecked')",
+            name="ck_reconciliation_state_status_known",
+        ),
+        CheckConstraint("drift_count >= 0", name="ck_reconciliation_state_count_non_negative"),
+        {"schema": "trading"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        SmallInteger, primary_key=True, server_default=text("1"), autoincrement=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'unchecked'")
+    )
+    #: True while entries are refused because the book and the venue disagree.
+    entries_halted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    drift_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    detail: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

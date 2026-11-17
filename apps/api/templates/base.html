@@ -44,6 +44,25 @@
           >
             {{ market | upper }}
           </span>
+          {% if ledger_status %}
+            {% set ledger_tone = "bg-slate-800 text-slate-400" %}
+            {% if ledger_status.status == "synced" %}
+              {% set ledger_tone = "bg-emerald-500/10 text-emerald-300" %}
+            {% elif ledger_status.status == "drift" %}
+              {% set ledger_tone = "bg-rose-600/40 text-rose-100 ring-1 ring-rose-500/70" %}
+            {% endif %}
+            <span
+              class="flex items-center gap-1.5 rounded px-2 py-1 font-semibold tracking-wide {{ ledger_tone }}"
+              title="{% if ledger_status.status == 'drift' %}The ledger and the venue disagree on {{ ledger_status.drift_count }} symbol(s); entries are halted until `python -m order_reconciler --acknowledge-drift` after fixing the book.{% else %}Last position comparison: {{ ledger_status.checked_at or 'not run yet' }}{% endif %}"
+            >
+              {% if ledger_status.status == "drift" %}
+                <span class="h-2 w-2 rounded-full bg-rose-400"></span>
+              {% elif ledger_status.status == "synced" %}
+                <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+              {% endif %}
+              {{ ledger_status.label }}
+            </span>
+          {% endif %}
           {% if exchange %}
             <span
               class="flex items-center gap-1.5 rounded px-2 py-1 {% if exchange.connected %}bg-emerald-500/10 text-emerald-300{% else %}bg-rose-500/20 text-rose-100 ring-1 ring-rose-500/50{% endif %}"

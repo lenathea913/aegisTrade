@@ -128,6 +128,29 @@ def _schema_checks(dsn: str) -> None:
         )
         check("positions CHECK rejects non-flat with zero basis", error is not None, str(error))
 
+        # A flat row may not keep a stop: a restart would then watch an exit for
+        # exposure that no longer exists.
+        error = _raises(
+            cursor,
+            "insert into trading.positions (symbol, qty, avg_entry, stop_loss) "
+            "values ('BTC/USDT', 0, 0, 29000)",
+        )
+        check("positions CHECK rejects a flat position with a stop", error is not None, str(error))
+
+        cursor.execute(
+            "insert into trading.reconciliation_state (id, status, entries_halted) "
+            "values (1, 'drift', true) "
+            "on conflict (id) do update set status = excluded.status, "
+            "entries_halted = excluded.entries_halted"
+        )
+        cursor.execute(
+            "select status, entries_halted from trading.reconciliation_state where id = 1"
+        )
+        check("reconciliation_state upserts its singleton", cursor.fetchone() == ("drift", True))
+        cursor.execute(
+            "update trading.reconciliation_state set status = 'unchecked', entries_halted = false"
+        )
+
 
 def _pipeline_check(settings: object) -> None:
     from aegis_config import Settings

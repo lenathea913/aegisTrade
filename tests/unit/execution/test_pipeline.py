@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from aegis_core import (
     Order,
     OrderIntent,
     Position,
+    PositionSide,
     RiskLimit,
     Side,
     Trade,
@@ -278,3 +280,117 @@ def test_trade_side_is_carried_through(
 
     assert result.trade is not None
     assert result.trade.side is Side.BUY
+
+
+class VenueProtectingBroker(PaperBroker):
+    """A futures-like broker: fills locally **and** records venue-side exits."""
+
+    name = "binance-futures-testnet"
+    live = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.protected: list[dict[str, object]] = []
+        self.cancelled: list[str] = []
+
+    def submit_protection_order(self, **kwargs: object) -> SimpleNamespace:
+        self.protected.append(kwargs)
+        return SimpleNamespace(stop_order_id="9001", take_order_id="9002")
+
+    def cancel_protection_orders(self, symbol: str) -> int:
+        self.cancelled.append(symbol)
+        return 1
+
+
+def test_a_futures_fill_places_the_stop_on_the_venue(
+    gate: RiskGate,
+    make_intent: Callable[..., OrderIntent],
+    market_at: MarketContext,
+    now: datetime,
+) -> None:
+    broker = VenueProtectingBroker()
+    writer = RecordingWriter()
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = TradingPipeline(
+        gate=gate,
+        gateway=ExecutionGateway(broker, allow_live_orders=True),
+        ledger=ledger,
+        writer=writer,
+    )
+    intent = make_intent(qty=Decimal("0.1"), created_at=now - timedelta(seconds=1))
+
+    result = pipeline.process(intent, market_at)
+
+    assert result.filled is True
+    assert len(broker.protected) == 1
+    placed = broker.protected[0]
+    # Closing a long is a SELL on the LONG leg: the side alone cannot say that.
+    assert placed["side"] is Side.SELL
+    assert placed["position_side"] is PositionSide.LONG
+    assert placed["stop_loss"] == intent.stop_loss
+    assert placed["take_profit"] == intent.take_profit
+    assert EventType.PROTECTION_PLACED in [event.event_type for event in result.events]
+    # The stop is persisted with the position, not only kept in memory.
+    assert writer.positions[0].stop_loss == intent.stop_loss
+
+
+def test_closing_a_position_cancels_the_venue_exit(
+    gate: RiskGate,
+    make_intent: Callable[..., OrderIntent],
+    market_at: MarketContext,
+    now: datetime,
+) -> None:
+    broker = VenueProtectingBroker()
+    writer = RecordingWriter()
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = TradingPipeline(
+        gate=gate,
+        gateway=ExecutionGateway(broker, allow_live_orders=True),
+        ledger=ledger,
+        writer=writer,
+    )
+    opening = make_intent(qty=Decimal("0.1"), created_at=now - timedelta(seconds=2))
+    pipeline.process(opening, market_at)
+
+    closing = make_intent(
+        side=Side.SELL,
+        qty=Decimal("0.1"),
+        stop_loss=Decimal("30600"),
+        take_profit=Decimal("28800"),
+        created_at=now - timedelta(seconds=1),
+    )
+    result = pipeline.process(closing, market_at)
+
+    assert result.filled is True
+    assert broker.cancelled == ["BTC/USDT"]
+    assert ledger.position("BTC/USDT").is_flat
+
+
+class _FailingProtection(VenueProtectingBroker):
+    def submit_protection_order(self, **kwargs: object) -> SimpleNamespace:
+        raise ExecutionError("exchange refused the stop")
+
+
+def test_a_rejected_stop_does_not_undo_the_fill(
+    gate: RiskGate,
+    make_intent: Callable[..., OrderIntent],
+    market_at: MarketContext,
+    now: datetime,
+) -> None:
+    broker = _FailingProtection()
+    writer = RecordingWriter()
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = TradingPipeline(
+        gate=gate,
+        gateway=ExecutionGateway(broker, allow_live_orders=True),
+        ledger=ledger,
+        writer=writer,
+    )
+
+    result = pipeline.process(
+        make_intent(qty=Decimal("0.1"), created_at=now - timedelta(seconds=1)), market_at
+    )
+
+    assert result.filled is True
+    assert ledger.position("BTC/USDT").qty == Decimal("0.1")
+    assert EventType.PROTECTION_FAILED in [event.event_type for event in result.events]

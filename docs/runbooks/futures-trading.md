@@ -99,10 +99,25 @@ Margin mode is isolated, always: `set_margin_type("CROSSED")` raises, and `-4046
   shorts receive. Charged by the runner's monitor cycle; only whole intervals are charged,
   so a 1-minute cadence debits exactly as often as an 8-hour one.
 
+## Protection and reconciliation
+
+Two rules keep a leveraged position safe when the process is not:
+
+* **The stop is persisted and also lives on the venue.** After a fill the approved
+  `stop_loss`/`take_profit` are written to `trading.positions`, so a restart re-arms the
+  monitor, and the futures adapter places reduce-only-style `STOP_MARKET` /
+  `TAKE_PROFIT_MARKET` orders with `closePosition=true` and `workingType=MARK_PRICE`.
+  When the leg closes those orders are cancelled (only protection order types — a queued
+  entry is never touched). If the venue refuses the stop, the fill stands, the alert is
+  CRITICAL and an audit row `protection_failed` is written.
+* **The book is compared with the venue every 60 s.** Any difference in net quantity,
+  entry (> 0.5 %) or leverage halts new entries (the protective monitor keeps running)
+  and turns the header badge red. See `docs/runbooks/ledger-reconciliation.md`.
+
 ## Operating it
 
 ```bash
-# 1. Migrate (adds trading.positions.leverage / trading.trades.leverage)
+# 1. Migrate (adds leverage, stop_loss/take_profit and trading.reconciliation_state)
 PYTHONPATH="packages;apps" uv run alembic -c data/migrations/alembic.ini upgrade head
 
 # 2. Paper futures: leverage + margin + funding, no keys needed
@@ -136,5 +151,6 @@ with leverage `1x` and empty margin/liq cells.
 * ONE-WAY mode is not supported: the adapter always sends hedge-mode `positionSide`.
 * Funding in paper mode uses one constant rate; the venue's rate varies and is settled
   from the mark price.
-* Reconciliation reads `positionRisk` only when called; the reconciler still works on
-  orders, not on venue positions.
+* The position comparison covers symbols the book knows plus every leg the venue
+  reports; it does not reconcile *orders* older than the ones still open.
+* A hedge pair that nets to zero counts as flat on both sides, not as a drift.

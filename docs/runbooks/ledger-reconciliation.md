@@ -4,10 +4,11 @@
 a restore happened, or you suspect the in-process ledger and the tables disagree.
 
 The ledger is the source of truth **while a process runs**; the tables are the durable
-record. `position_monitor` reloads open positions and their newest stop/target from
-the tables at startup, but the API does not restore anything and realized PnL history
-is never reconstructed — so after a restart `/positions` and the loss windows can
-legitimately differ from the tables. That is the most common source of a "mismatch".
+record. Both processes rebuild the book from `trading.trades` at startup, and an open
+position's stop/target is reloaded from `trading.positions`, so a restart no longer
+silently drops protection. `/positions` can still differ from the tables while a run
+is in flight (an unpersisted tick, a slow replica) — that is the most common source of
+a "mismatch".
 
 ## 1. Snapshot both sides
 
@@ -66,8 +67,63 @@ docker compose -f infra/compose/docker-compose.paper.yml exec postgres \
      rather than rewriting history.
 5. Record what happened in the incident notes, including the SQL you ran.
 
-## 4. Known gap
+## 4. Venue-side comparison (futures, testnet)
 
-Automatic reconciliation (load positions and realized PnL on startup, compare with the
-tables, refuse to start on mismatch) is **not implemented**. Until it is, treat any
-restart as untrusted for `/positions` and run the checks above before resuming.
+A disagreement with the *database* is not the dangerous one; a disagreement with the
+**exchange** is, because the next order is sized against whatever the ledger believes.
+The runner compares the book with `GET /fapi/v2/positionRisk` every
+`reconciler.position_interval_seconds` (default 60 s) and, on any difference in net
+quantity, entry price (> 0.5 %) or leverage:
+
+1. logs `position_drift_detected` at **CRITICAL**,
+2. sends a CRITICAL alert (Telegram when `alerting.enabled`),
+3. writes `trading.reconciliation_state` with `entries_halted = true`.
+
+What that means operationally:
+
+- **New entries stop immediately** — the runner logs `runner_entries_halted` and skips
+  its scan. The protective monitor keeps running: an open position still needs its
+  stop, and the venue also holds `STOP_MARKET`/`TAKE_PROFIT_MARKET` orders if they were
+  placed successfully.
+- **The header badge turns red** — "Ledger drift!" with the drifted symbol count.
+- Everything else (journal, signals, manual close) still works.
+
+### Acknowledging
+
+Only after the book and the venue agree again:
+
+```bash
+# 1. See what the last comparison found
+psql "$AEGIS_DATABASE__URL" -c \
+  "select status, entries_halted, drift_count, detail, detected_at from trading.reconciliation_state;"
+
+# 2. Look at the venue by hand (web UI or API), and at the audit trail
+psql "$AEGIS_DATABASE__URL" -c \
+  "select created_at, entity_id, payload from audit.audit_logs where event_type = 'position_drift_detected' order by id desc limit 5;"
+
+# 3. If the difference was a missed fill, record the correction forward
+#    (see section 3) — never rewrite trades or audit rows.
+
+# 4. Clear the halt; the next comparison re-checks the venue within a minute
+PYTHONPATH="packages;apps" uv run python -m order_reconciler --acknowledge-drift
+```
+
+The acknowledgement is written to the audit log as `position_drift_acknowledged`
+(actor `operator`). Clearing the flag is not evidence that the venue agrees: the status
+becomes `unchecked` and the next pass decides again.
+
+If the badge says "Ledger unchecked", no comparison has run yet (paper mode, spot mode,
+or the runner has not started) — that is not a drift.
+
+## 5. Protective levels after a restart
+
+Open positions store `stop_loss`/`take_profit` in `trading.positions`; the database
+CHECK forbids a flat row from keeping either. Verify:
+
+```sql
+select symbol, qty, stop_loss, take_profit, leverage from trading.positions;
+```
+
+A non-flat row with `stop_loss IS NULL` is **unprotected**: it will not be watched by
+the monitor. Close it manually (`docs/runbooks/kill-switch.md`) or re-open it with a
+stop rather than leaving it running.

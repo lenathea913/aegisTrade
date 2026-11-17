@@ -18,12 +18,22 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
-from aegis_core import ApprovedOrder, MarketContext, Order, Trade, UnapprovedOrderError, utc_now
+from aegis_core import (
+    ApprovedOrder,
+    MarketContext,
+    Order,
+    PositionSide,
+    Side,
+    Trade,
+    UnapprovedOrderError,
+    utc_now,
+)
 from aegis_execution.broker import Broker, BrokerFill
 from aegis_execution.errors import ExecutionError, LiveTradingDisabledError
 
-__all__ = ["ExecutionGateway", "ExecutionResult"]
+__all__ = ["ExecutionGateway", "ExecutionResult", "ProtectionResult"]
 
 
 @dataclass(frozen=True)
@@ -38,6 +48,18 @@ class ExecutionResult:
     @property
     def filled(self) -> bool:
         return self.fill is not None and self.trade is not None
+
+
+@dataclass(frozen=True)
+class ProtectionResult:
+    """Venue order ids of the exits attached to a leg."""
+
+    stop_order_id: str | None = None
+    take_order_id: str | None = None
+
+    @property
+    def any_placed(self) -> bool:
+        return self.stop_order_id is not None or self.take_order_id is not None
 
 
 class ExecutionGateway:
@@ -57,6 +79,54 @@ class ExecutionGateway:
     @property
     def broker_name(self) -> str:
         return self._broker.name
+
+    @property
+    def places_protection(self) -> bool:
+        """True when the venue can hold the stop itself (futures, not paper)."""
+        return callable(getattr(self._broker, "submit_protection_order", None))
+
+    def protect(
+        self,
+        *,
+        symbol: str,
+        side: Side,
+        position_side: PositionSide,
+        qty: Decimal,
+        stop_loss: Decimal,
+        take_profit: Decimal | None,
+    ) -> ProtectionResult | None:
+        """Ask the venue to hold the exits for an open leg.
+
+        ``None`` means this broker has no venue-side protection (paper, spot); the
+        caller still has the in-process monitor, so that is not an error.
+        """
+        place = getattr(self._broker, "submit_protection_order", None)
+        if not callable(place):
+            return None
+        if getattr(self._broker, "live", False) and not self._allow_live_orders:
+            raise LiveTradingDisabledError(
+                "live orders are disabled (execution.allow_live_orders = false)"
+            )
+        placed = place(
+            symbol=symbol,
+            side=side,
+            position_side=position_side,
+            qty=qty,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+        return ProtectionResult(
+            stop_order_id=getattr(placed, "stop_order_id", None),
+            take_order_id=getattr(placed, "take_order_id", None),
+        )
+
+    def cancel_protection(self, symbol: str) -> int:
+        """Remove venue-side exits for ``symbol``; ``1``..n cancelled, ``0`` nothing."""
+        cancel = getattr(self._broker, "cancel_protection_orders", None)
+        if not callable(cancel):
+            return 0
+        cancelled = cancel(symbol)
+        return int(cancelled or 0)
 
     def execute(self, approved: ApprovedOrder, *, market: MarketContext) -> ExecutionResult:
         """Send one approved order; raise rather than trade on unclear input."""

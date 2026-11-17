@@ -14,6 +14,7 @@ Three rules shape this module:
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -56,6 +57,7 @@ from api.security import ApiTokenGuard, install_api_token_middleware
 from api.service import ApiService
 from api.trading import CloseRequestError
 from api.trading import close_position as close_via_gate
+from order_reconciler.state import SqlReconciliationState
 from position_monitor.quotes import CandleQuoteSource
 from signal_service import (
     SignalNotFoundError,
@@ -193,11 +195,45 @@ def create_app(
     app = FastAPI(title="AegisTrade API", version=__version__, lifespan=lifespan)
 
     templates = TEMPLATES
+    reconciliation = (
+        SqlReconciliationState(session_factory) if session_factory is not None else None
+    )
+    #: One short-lived cache per process: the header reads this on every page, and the
+    #: row only changes when the reconciler writes it.
+    ledger_cache: list[tuple[float, dict[str, Any]]] = []
+
+    def _ledger_status() -> dict[str, Any]:
+        """Header badge: does the book agree with the venue right now?"""
+        moment = time.monotonic()
+        if ledger_cache and moment - ledger_cache[0][0] < 5.0:
+            return ledger_cache[0][1]
+        if reconciliation is None:
+            return {"status": "unchecked", "label": "Ledger unchecked", "halted": False}
+        try:
+            snapshot = reconciliation.load()
+        except SQLAlchemyError:
+            # Unreadable is not "synced": say so instead of showing a green badge.
+            return {"status": "unchecked", "label": "Ledger unchecked", "halted": False}
+        status = {
+            "status": snapshot.status,
+            "label": snapshot.label,
+            "halted": snapshot.entries_halted,
+            "checked_at": None if snapshot.checked_at is None else snapshot.checked_at.isoformat(),
+            "drift_count": snapshot.drift_count,
+        }
+        ledger_cache[:] = [(moment, status)]
+        return status
 
     def _render(request: Request, name: str, context: dict[str, Any]) -> Response:
-        """Render a template with the exchange badge always in scope."""
+        """Render a template with the exchange and ledger badges always in scope."""
         return templates.TemplateResponse(
-            request, name, {"exchange": service.exchange_status(), **context}
+            request,
+            name,
+            {
+                "exchange": service.exchange_status(),
+                "ledger_status": _ledger_status(),
+                **context,
+            },
         )
 
     def _open_sides() -> dict[str, str]:

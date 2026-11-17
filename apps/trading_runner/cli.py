@@ -33,7 +33,8 @@ from aegis_db import create_engine_from_settings, create_session_factory, sessio
 from aegis_ledger import LedgerError, LedgerStore, LedgerWriter, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
 from aegis_risk import RiskGate
-from order_reconciler.cli import reconcile_once
+from order_reconciler.cli import reconcile_once, reconcile_positions_once
+from order_reconciler.state import SqlReconciliationState
 from position_monitor.quotes import CandleQuoteSource, live_quote_source
 from signal_service import SignalService, SqlCandleRepository, SqlSignalStore
 from trading_runner.candles import SqlLatestCandleSource
@@ -98,6 +99,17 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
     ledger = PortfolioLedger(initial_equity=settings.risk.initial_equity)
     restore_ledger(ledger, factory)
     reconcile_at_startup(settings, factory, ledger)
+    state = SqlReconciliationState(factory)
+
+    def entries_blocked() -> str | None:
+        """Why entries must not run, read from the durable reconciliation flag."""
+        try:
+            return state.load().blocked_reason
+        except SQLAlchemyError as exc:
+            # Fail closed: without the flag's answer, the book cannot be trusted.
+            get_logger("aegis.runner").warning("reconciliation_state_unavailable", error=str(exc))
+            return "reconciliation_unavailable"
+
     signals = SignalService(
         gate=RiskGate.from_settings(settings),
         ledger=ledger,
@@ -116,6 +128,8 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         writer_factory=lambda: _writer(factory),
         live_quotes=live_quote_source(settings, factory),
         alerter=build_alerter(settings.alerting),
+        entries_blocked=entries_blocked,
+        position_reconciliation=lambda: reconcile_positions_once(settings, factory, ledger),
     )
 
 
@@ -129,6 +143,7 @@ def report_payload(report: RunnerReport) -> dict[str, Any]:
             "filled": list(report.entries.filled),
             "rejected": list(report.entries.rejected),
         },
+        "drift": report.drift,
         "exits": [
             {
                 "symbol": action.symbol,
@@ -194,6 +209,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             with lock:
                 runner.run_monitor_cycle()
 
+        def reconcile_job() -> None:
+            with lock:
+                runner.run_position_reconciliation()
+
         scheduler = BackgroundScheduler(timezone="UTC")
         scheduler.add_job(
             entry_job,
@@ -210,9 +229,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_instances=1,
                 coalesce=True,
             )
+        if settings.execution.broker != "paper":
+            scheduler.add_job(
+                reconcile_job,
+                IntervalTrigger(seconds=settings.reconciler.position_interval_seconds),
+                id="position-reconcile",
+                max_instances=1,
+                coalesce=True,
+            )
+            # Do not wait a minute to learn that the book is already wrong.
+            runner.run_position_reconciliation()
         logger.info(
             "runner_started",
             environment=settings.environment.value,
+            position_reconcile_interval_seconds=(
+                None
+                if settings.execution.broker == "paper"
+                else settings.reconciler.position_interval_seconds
+            ),
             execution_mode=settings.execution.mode.value,
             signal_interval_seconds=settings.runner.signal_interval_seconds,
             monitor_interval_seconds=settings.runner.monitor_interval_seconds,

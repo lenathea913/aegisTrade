@@ -12,6 +12,7 @@ from aegis_db.models import (
     Candle,
     OrderRecord,
     PositionRecord,
+    ReconciliationStateRecord,
     SignalRecord,
     TradeRecord,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "Candle",
     "OrderRecord",
     "PositionRecord",
+    "ReconciliationStateRecord",
     "SignalRecord",
     "TimestampMixin",
     "TradeRecord",

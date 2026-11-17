@@ -98,10 +98,12 @@ class RunnerCycle:
 
 @dataclass(frozen=True)
 class RunnerReport:
-    """One ``--once`` pass: the entry scan plus the monitor's actions."""
+    """One ``--once`` pass: the sync check, the entry scan and the monitor's exits."""
 
     entries: RunnerCycle
     exits: tuple[MonitorAction, ...] = ()
+    #: Number of ledger-vs-venue disagreements found before the entry scan.
+    drift: int = 0
 
 
 class TradingRunner:
@@ -119,6 +121,8 @@ class TradingRunner:
         live_quotes: QuoteSource | None = None,
         alerter: Alerter | None = None,
         clock: Callable[[], datetime] = utc_now,
+        entries_blocked: Callable[[], str | None] | None = None,
+        position_reconciliation: Callable[[], object] | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -129,6 +133,9 @@ class TradingRunner:
         self._live_quotes = live_quotes
         self._alerter = alerter
         self._clock = clock
+        #: Returns why entries must not run (drift/unavailable), or ``None`` when clear.
+        self._entries_blocked = entries_blocked
+        self._position_reconciliation = position_reconciliation
         self._timeframe: Timeframe = settings.market_data.timeframes[0]
         self._logger = get_logger("aegis.runner")
 
@@ -141,6 +148,17 @@ class TradingRunner:
                 "runner_kill_switch", reason="risk.kill_switch is true; no entries this cycle"
             )
             return RunnerCycle(skipped="kill_switch")
+
+        blocked = self._entries_blocked() if self._entries_blocked is not None else None
+        if blocked is not None:
+            # A book that disagrees with the venue cannot be sized safely. Exits keep
+            # running (separate job) so open positions still get their stop.
+            self._logger.critical(
+                "runner_entries_halted",
+                reason=blocked,
+                detail="reconcile the book, then `python -m order_reconciler --acknowledge-drift`",
+            )
+            return RunnerCycle(skipped=blocked)
 
         now = self._clock()
         fresh = self._fresh_symbols(now)
@@ -332,9 +350,31 @@ class TradingRunner:
         if charged:
             self._logger.info("runner_funding_accrued", amount=str(charged))
 
+    def run_position_reconciliation(self) -> int:
+        """Compare the book with the venue once; return how many drifts were found.
+
+        Runs *before* entries in ``run_once``: a drift discovered after the scan would
+        already have been traded on.
+        """
+        if self._position_reconciliation is None:
+            return 0
+        try:
+            drifts = self._position_reconciliation()
+        except Exception as exc:  # a failed check must not stop the loop
+            self._logger.error("position_reconcile_failed", error=str(exc))
+            return 0
+        if isinstance(drifts, tuple):
+            return len(drifts)
+        return drifts if isinstance(drifts, int) else 0
+
     def run_once(self) -> RunnerReport:
-        """One pass of both cycles — used by ``--once`` and by the tests."""
-        return RunnerReport(entries=self.run_entry_cycle(), exits=self.run_monitor_cycle())
+        """One pass of every cycle — used by ``--once`` and by the tests."""
+        drift = self.run_position_reconciliation()
+        return RunnerReport(
+            entries=self.run_entry_cycle(),
+            exits=self.run_monitor_cycle(),
+            drift=drift,
+        )
 
     # -------------------------------------------------------------- internals
 

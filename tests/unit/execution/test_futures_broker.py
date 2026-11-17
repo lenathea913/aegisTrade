@@ -223,3 +223,60 @@ def test_submit_payload_is_json_encodable() -> None:
     broker.submit(make_order(), market_price=Decimal("30000"), now=NOW)
 
     json.dumps(dict(httpx.QueryParams(calls[-1].url.query)))
+
+
+def _protection_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path.endswith("/openOrders"):
+        return httpx.Response(
+            200,
+            json=[
+                {"orderId": 11, "type": "STOP_MARKET"},
+                {"orderId": 12, "type": "TAKE_PROFIT_MARKET"},
+                {"orderId": 13, "type": "LIMIT"},
+            ],
+        )
+    if request.method == "DELETE":
+        return httpx.Response(200, json={"orderId": 11, "status": "CANCELED", "executedQty": "0"})
+    return httpx.Response(
+        200,
+        json={"orderId": 9100, "status": "NEW", "executedQty": "0", "symbol": "BTCUSDT"},
+    )
+
+
+def test_protection_orders_close_the_leg_at_a_mark_price_trigger() -> None:
+    broker, calls = build(_protection_handler)
+
+    placed = broker.submit_protection_order(
+        symbol="BTC/USDT",
+        side=Side.SELL,
+        position_side=PositionSide.LONG,
+        stop_loss=Decimal("29000"),
+        take_profit=Decimal("32000"),
+        qty=Decimal("0.1"),
+    )
+
+    assert placed.stop_order_id == "9100"
+    assert placed.take_order_id == "9100"
+    orders = [call for call in calls if call.url.path.endswith("/v1/order")]
+    assert len(orders) == 2
+    stop, take = (dict(call.url.params) for call in orders)
+    assert stop["type"] == "STOP_MARKET"
+    assert take["type"] == "TAKE_PROFIT_MARKET"
+    assert stop["stopPrice"] == "29000"
+    assert take["stopPrice"] == "32000"
+    # closePosition makes the order unable to open exposure; no quantity is sent.
+    assert stop["closePosition"] == "true"
+    assert "quantity" not in stop
+    assert stop["workingType"] == "MARK_PRICE"
+    assert stop["side"] == "SELL"
+    assert stop["positionSide"] == "LONG"
+
+
+def test_only_protection_orders_are_cancelled_when_a_leg_closes() -> None:
+    broker, calls = build(_protection_handler)
+
+    cancelled = broker.cancel_protection_orders("BTC/USDT")
+
+    assert cancelled == 2
+    deletes = [call for call in calls if call.method == "DELETE"]
+    assert [dict(call.url.params)["orderId"] for call in deletes] == ["11", "12"]

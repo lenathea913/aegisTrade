@@ -13,7 +13,7 @@ gateway is never constructed for that intent and no order exists anywhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from aegis_alerting import Alert, Alerter, AlertLevel
@@ -22,6 +22,8 @@ from aegis_core import (
     MarketContext,
     Order,
     OrderIntent,
+    Position,
+    PositionSide,
     RiskDecision,
     Trade,
     get_random_motivation,
@@ -248,10 +250,12 @@ class TradingPipeline:
         )
 
         update = self._ledger.apply_trade(trade)
+        protected = False
         if not update.position.is_flat and update.position.side is not None:
-            # The approved levels travel with the position, so anything watching the
-            # ledger (e.g. the position monitor) knows where the exit belongs.
-            self._ledger.set_protection(
+            # The approved levels travel with the position *and* with the row it is
+            # persisted as, so anything watching the ledger (the position monitor) and
+            # anything reading the database (a restarted process) sees the same stop.
+            position = self._ledger.set_protection(
                 PositionProtection(
                     symbol=update.position.symbol,
                     side=update.position.side,
@@ -261,6 +265,11 @@ class TradingPipeline:
                     strategy_id=approved.strategy_id,
                 )
             )
+            update = replace(update, position=position)
+            protected = True
+        else:
+            # The leg is gone, so anything the venue holds for it must go with it.
+            self._release_venue_protection(update.position.symbol)
         events.append(
             AuditEvent(
                 event_type=EventType.TRADE_RECORDED,
@@ -293,6 +302,9 @@ class TradingPipeline:
             )
         )
 
+        if protected:
+            events.extend(self._place_venue_protection(order, approved, update.position))
+
         self._persist_order(order, approved)
         if self._writer is not None:
             self._writer.save_trade(trade)
@@ -324,6 +336,93 @@ class TradingPipeline:
         )
 
     # ------------------------------------------------------------- helpers
+
+    def _place_venue_protection(
+        self, order: Order, approved: ApprovedOrder, position: Position
+    ) -> list[AuditEvent]:
+        """Attach the stop and target on the venue so they outlive this process.
+
+        A failure here does not undo the fill — the position exists either way — but it
+        is a CRITICAL alert and an audit row: a leveraged position whose stop only
+        lives in memory is exactly the risk this path exists to remove.
+        """
+        if not self._gateway.places_protection:
+            return []
+        side = position.side
+        if side is None:  # pragma: no cover - caller checks is_flat
+            return []
+        try:
+            placed = self._gateway.protect(
+                symbol=position.symbol,
+                side=side.opposite,
+                position_side=order.position_side or PositionSide.for_entry(side),
+                qty=position.abs_qty,
+                stop_loss=approved.stop_loss,
+                take_profit=approved.take_profit,
+            )
+        except ExecutionError as exc:
+            self._logger.error(
+                "protection_not_placed",
+                symbol=position.symbol,
+                error=str(exc),
+                motivation=get_random_motivation(),
+            )
+            self._notify(
+                Alert(
+                    level=AlertLevel.CRITICAL,
+                    title="Stop not placed on the venue",
+                    message=(
+                        f"{position.symbol} is open but the venue rejected its stop; "
+                        "only the local monitor protects it."
+                    ),
+                    source="execution",
+                    context={
+                        "symbol": position.symbol,
+                        "status": "UNPROTECTED",
+                        "detail": str(exc)[:400],
+                    },
+                )
+            )
+            return [
+                AuditEvent(
+                    event_type=EventType.PROTECTION_FAILED,
+                    entity_type="position",
+                    entity_id=position.symbol,
+                    payload={"symbol": position.symbol, "error": str(exc)},
+                )
+            ]
+        if placed is None or not placed.any_placed:  # pragma: no cover - defensive
+            return []
+        self._logger.info(
+            "protection_placed",
+            symbol=position.symbol,
+            stop_order_id=placed.stop_order_id,
+            take_order_id=placed.take_order_id,
+        )
+        return [
+            AuditEvent(
+                event_type=EventType.PROTECTION_PLACED,
+                entity_type="position",
+                entity_id=position.symbol,
+                payload={
+                    "symbol": position.symbol,
+                    "stop_order_id": placed.stop_order_id,
+                    "take_order_id": placed.take_order_id,
+                    "stop_loss": str(approved.stop_loss),
+                    "take_profit": _text(approved.take_profit),
+                },
+            )
+        ]
+
+    def _release_venue_protection(self, symbol: str) -> None:
+        """Cancel venue-side exits after the leg closed; never fails the close."""
+        try:
+            cancelled = self._gateway.cancel_protection(symbol)
+        except ExecutionError as exc:
+            self._logger.warning("protection_cancel_failed", symbol=symbol, error=str(exc))
+            return
+        if cancelled:
+            self._logger.info("protection_cancelled", symbol=symbol, count=cancelled)
 
     def _persist_order(self, order: Order, approved: ApprovedOrder) -> None:
         if self._writer is not None:

@@ -285,15 +285,32 @@ class PortfolioLedger:
         for symbol, price in prices.items():
             self.mark_price(symbol, price)
 
-    def set_protection(self, protection: PositionProtection) -> None:
-        """Attach exit levels to an open position (replacing any previous ones)."""
+    def set_protection(self, protection: PositionProtection) -> Position:
+        """Attach exit levels to an open position (replacing any previous ones).
+
+        The levels are also written onto the ``Position`` itself, because that object is
+        what ``LedgerStore.save_position`` persists: keeping them in one place is what
+        lets a restart restore the monitor's stops from the position row.
+        """
         wanted = Position.flat(protection.symbol).symbol
-        if self.position(wanted).is_flat:
+        current = self.position(wanted)
+        if current.is_flat:
             raise LedgerError(f"cannot protect a flat position: {wanted}")
         self._protections[wanted] = protection
+        updated = current.model_copy(
+            update={"stop_loss": protection.stop_loss, "take_profit": protection.take_profit}
+        )
+        self._positions[wanted] = updated
+        return updated
 
     def clear_protection(self, symbol: str) -> None:
-        self._protections.pop(Position.flat(symbol).symbol, None)
+        wanted = Position.flat(symbol).symbol
+        self._protections.pop(wanted, None)
+        current = self._positions.get(wanted)
+        if current is not None and not current.is_flat:
+            self._positions[wanted] = current.model_copy(
+                update={"stop_loss": None, "take_profit": None}
+            )
 
     # ------------------------------------------------------------ snapshots
 
@@ -369,6 +386,7 @@ class PortfolioLedger:
                 )
             )
 
+        self._restore_protections(stored)
         mismatches = self._compare_positions(stored)
         if mismatches and strict:
             raise LedgerError(
@@ -386,6 +404,34 @@ class PortfolioLedger:
             equity=state.equity,
             replayed_at=moment,
         )
+
+    def _restore_protections(self, stored: Sequence[Position]) -> None:
+        """Reattach the stored stop/target to every open replayed position.
+
+        Trades alone cannot rebuild a stop: the level lives on the position row. Without
+        this the monitor starts after a restart with nothing to watch, which is exactly
+        how an open leveraged position ends up unprotected.
+        """
+        by_symbol = {position.symbol: position for position in stored}
+        for symbol, replayed in self._positions.items():
+            row = by_symbol.get(symbol)
+            stop_loss = None if row is None else getattr(row, "stop_loss", None)
+            if row is None or replayed.is_flat or stop_loss is None:
+                continue
+            side = replayed.side
+            if side is None:  # pragma: no cover - non-flat implies a side
+                continue
+            protection = PositionProtection(
+                symbol=symbol,
+                side=side,
+                qty=replayed.abs_qty,
+                stop_loss=stop_loss,
+                take_profit=getattr(row, "take_profit", None),
+            )
+            self._protections[symbol] = protection
+            self._positions[symbol] = replayed.model_copy(
+                update={"stop_loss": protection.stop_loss, "take_profit": protection.take_profit}
+            )
 
     def _compare_positions(self, stored: Sequence[Position]) -> list[str]:
         """Differences between the replay and the positions table (empty = consistent)."""

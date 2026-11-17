@@ -54,6 +54,7 @@ __all__ = [
     "DEFAULT_FUTURES_TESTNET_BASE_URL",
     "BinanceFuturesTestnetBroker",
     "FuturesPosition",
+    "ProtectionOrders",
     "ensure_futures_testnet_base_url",
 ]
 
@@ -61,6 +62,8 @@ DEFAULT_FUTURES_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
 _FUTURES_PREFIX = "/fapi"
 _TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
 _AUTH_STATUS = frozenset({401, 403})
+#: Order types that only ever close a leg; used to find our own exits on the venue.
+_PROTECTION_TYPES = frozenset({"STOP_MARKET", "TAKE_PROFIT_MARKET"})
 #: "No need to change margin type" — already ISOLATED.
 _MARGIN_ALREADY_SET = -4046
 _STATUS_MAP: dict[str, OrderStatus] = {
@@ -102,6 +105,18 @@ class FuturesPosition:
     leverage: int
     liquidation_price: Decimal | None
     isolated_margin: Decimal | None
+
+
+@dataclass(frozen=True)
+class ProtectionOrders:
+    """Venue-side exit orders attached to one open leg (either may be ``None``)."""
+
+    stop_order_id: str | None
+    take_order_id: str | None
+
+    @property
+    def any_placed(self) -> bool:
+        return self.stop_order_id is not None or self.take_order_id is not None
 
 
 class BinanceFuturesTestnetBroker:
@@ -265,6 +280,98 @@ class BinanceFuturesTestnetBroker:
                 )
             )
         return tuple(positions)
+
+    # ------------------------------------------------------ venue protection
+
+    def submit_protection_order(
+        self,
+        *,
+        symbol: str,
+        side: Side,
+        position_side: PositionSide,
+        stop_loss: Decimal,
+        take_profit: Decimal | None = None,
+        qty: Decimal | None = None,
+    ) -> ProtectionOrders:
+        """Attach ``STOP_MARKET`` / ``TAKE_PROFIT_MARKET`` closes to an open leg.
+
+        ``closePosition=true`` makes each order flat the whole leg, so it can never
+        open (or re-open) exposure and needs no quantity. ``MarkPrice`` is the trigger
+        because that is the price liquidation is measured against; the last-traded
+        price can be wick-hunted while mark stays put.
+        """
+        stop_id = self._submit_protection(
+            symbol=symbol,
+            side=side,
+            position_side=position_side,
+            order_type="STOP_MARKET",
+            stop_price=stop_loss,
+        )
+        take_id = (
+            None
+            if take_profit is None
+            else self._submit_protection(
+                symbol=symbol,
+                side=side,
+                position_side=position_side,
+                order_type="TAKE_PROFIT_MARKET",
+                stop_price=take_profit,
+            )
+        )
+        return ProtectionOrders(stop_order_id=stop_id, take_order_id=take_id)
+
+    def _submit_protection(
+        self,
+        *,
+        symbol: str,
+        side: Side,
+        position_side: PositionSide,
+        order_type: str,
+        stop_price: Decimal,
+    ) -> str:
+        params: dict[str, str] = {
+            "symbol": to_exchange_symbol(symbol),
+            "side": side.value,
+            "positionSide": position_side.value,
+            "type": order_type,
+            "stopPrice": _decimal_text(stop_price),
+            "closePosition": "true",
+            "workingType": "MARK_PRICE",
+            "timeInForce": "GTC",
+            "newOrderRespType": "RESULT",
+        }
+        payload = _as_object(self._request("POST", "/v1/order", params), "/fapi/v1/order")
+        order_id = payload.get("orderId")
+        if order_id is None:
+            raise ExchangeError(f"exchange accepted the {order_type} without an order id")
+        return str(order_id)
+
+    def cancel_protection_orders(self, symbol: str) -> int:
+        """Cancel the venue-side exits of ``symbol``; return how many were cancelled.
+
+        Only ``STOP_MARKET``/``TAKE_PROFIT_MARKET`` orders are touched: an entry the
+        operator queued by hand must not disappear because a position closed.
+        """
+        venue_symbol = to_exchange_symbol(symbol)
+        payload = self._request("GET", "/v1/openOrders", {"symbol": venue_symbol})
+        if not isinstance(payload, list):
+            raise ExchangeError("exchange returned an unexpected open-orders payload")
+        cancelled = 0
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "")).upper() not in _PROTECTION_TYPES:
+                continue
+            order_id = item.get("orderId")
+            if order_id is None:
+                continue
+            self._request(
+                "DELETE",
+                "/v1/order",
+                {"symbol": venue_symbol, "orderId": str(order_id)},
+            )
+            cancelled += 1
+        return cancelled
 
     def cancel(self, exchange_order_id: str, *, symbol: str) -> ExchangeOrderState:
         payload = _as_object(

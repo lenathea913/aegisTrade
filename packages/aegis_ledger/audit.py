@@ -32,6 +32,10 @@ class EventType(StrEnum):
     TRADE_RECORDED = "trade_recorded"
     POSITION_UPDATED = "position_updated"
     MANUAL_CLOSE = "manual_close"
+    PROTECTION_PLACED = "protection_placed"
+    PROTECTION_FAILED = "protection_failed"
+    POSITION_DRIFT_DETECTED = "position_drift_detected"
+    POSITION_DRIFT_ACKNOWLEDGED = "position_drift_acknowledged"
 
 
 class AuditEvent(StrictModel):

@@ -44,6 +44,10 @@ class Position(StrictModel):
     realized_pnl: FiniteDecimal = _ZERO
     #: Margin multiplier of the open leg (1 = spot). Reserved for the leg's lifetime.
     leverage: int = Field(default=1, ge=1, le=MAX_LEVERAGE)
+    #: Protective exit levels, carried with the leg so they survive a restart. A flat
+    #: position has none: there is no exposure for a stop to protect.
+    stop_loss: FiniteDecimal | None = None
+    take_profit: FiniteDecimal | None = None
     opened_at: UtcDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -54,6 +58,12 @@ class Position(StrictModel):
             raise ValueError("a non-flat position must have a positive avg_entry")
         if self.qty == 0 and self.leverage != 1:
             raise ValueError("a flat position posts no margin, so leverage must be 1")
+        if self.qty == 0 and (self.stop_loss is not None or self.take_profit is not None):
+            raise ValueError("a flat position cannot carry protective exit levels")
+        if self.stop_loss is not None and self.stop_loss <= 0:
+            raise ValueError("stop_loss must be greater than 0")
+        if self.take_profit is not None and self.take_profit <= 0:
+            raise ValueError("take_profit must be greater than 0")
         return self
 
     @classmethod
@@ -145,6 +155,7 @@ class Position(StrictModel):
         realized = self.realized_pnl + (price - self.avg_entry) * closed_qty * direction
 
         if new_qty == 0:
+            # Fully closed: nothing is left to protect.
             return self.model_copy(
                 update={
                     "qty": _ZERO,
@@ -152,6 +163,8 @@ class Position(StrictModel):
                     "unrealized_pnl": _ZERO,
                     "realized_pnl": realized,
                     "leverage": 1,
+                    "stop_loss": None,
+                    "take_profit": None,
                 }
             )
         if (new_qty > 0) == (self.qty > 0):
@@ -159,7 +172,8 @@ class Position(StrictModel):
             return self.model_copy(
                 update={"qty": new_qty, "realized_pnl": realized, "unrealized_pnl": _ZERO}
             )
-        # Flipped through zero: the new leg opens at the fill price.
+        # Flipped through zero: the new leg opens at the fill price, and the old leg's
+        # levels belong to the leg that was just closed.
         return self.model_copy(
             update={
                 "qty": new_qty,
@@ -167,6 +181,8 @@ class Position(StrictModel):
                 "unrealized_pnl": _ZERO,
                 "realized_pnl": realized,
                 "leverage": self.leverage if leverage is None else leverage,
+                "stop_loss": None,
+                "take_profit": None,
             }
         )
 

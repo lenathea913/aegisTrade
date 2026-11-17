@@ -29,6 +29,10 @@ _POSITION_UPDATE_COLUMNS = (
     "unrealized_pnl",
     "realized_pnl",
     "opened_at",
+    "leverage",
+    # Protective levels live on the row so a restart can rebuild the monitor's stops.
+    "stop_loss",
+    "take_profit",
 )
 
 

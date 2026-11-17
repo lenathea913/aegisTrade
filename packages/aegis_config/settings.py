@@ -161,10 +161,16 @@ class StreamingSettings(_Section):
 
 
 class ReconcilerSettings(_Section):
-    """Order status synchronisation (``apps/order_reconciler``)."""
+    """Order and position synchronisation (``apps/order_reconciler``).
+
+    ``position_interval_seconds`` is deliberately one minute: a position the venue has
+    and the book does not is a sizing error on the very next entry, so the comparison
+    runs at the monitor's cadence rather than the order poller's.
+    """
 
     enabled: bool = True
     interval_seconds: int = Field(default=5, ge=1, le=300)
+    position_interval_seconds: int = Field(default=60, ge=10, le=3600)
 
 
 class MarketDataSettings(_Section):

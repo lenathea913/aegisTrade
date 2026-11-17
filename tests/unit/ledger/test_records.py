@@ -103,6 +103,8 @@ def test_position_row_matches_the_table_shape() -> None:
         "realized_pnl",
         "leverage",
         "opened_at",
+        "stop_loss",
+        "take_profit",
     }
 
 

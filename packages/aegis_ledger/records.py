@@ -37,6 +37,7 @@ class TradeRow(Protocol):
     filled_at: Any
     strategy_id: str
     r_multiple: Any
+    leverage: int
 
 
 class PositionRow(Protocol):
@@ -48,6 +49,7 @@ class PositionRow(Protocol):
     unrealized_pnl: Any
     realized_pnl: Any
     opened_at: Any
+    leverage: int
 
 
 def order_row(order: Order, approved: ApprovedOrder) -> dict[str, Any]:
@@ -89,6 +91,7 @@ def trade_row(trade: Trade) -> dict[str, Any]:
         "filled_at": trade.filled_at,
         "strategy_id": trade.strategy_id,
         "r_multiple": trade.r_multiple,
+        "leverage": trade.leverage,
     }
 
 
@@ -101,6 +104,7 @@ def position_row(position: Position) -> dict[str, Any]:
         "unrealized_pnl": position.unrealized_pnl,
         "realized_pnl": position.realized_pnl,
         "opened_at": position.opened_at,
+        "leverage": position.leverage,
     }
 
 
@@ -118,6 +122,8 @@ def trade_from_row(row: TradeRow) -> Trade:
         filled_at=row.filled_at,
         strategy_id=row.strategy_id,
         r_multiple=row.r_multiple,
+        # Rows written before futures mode have no leverage column value: they are spot.
+        leverage=getattr(row, "leverage", 1),
     )
 
 
@@ -130,6 +136,7 @@ def position_from_row(row: PositionRow) -> Position:
         unrealized_pnl=row.unrealized_pnl,
         realized_pnl=row.realized_pnl,
         opened_at=row.opened_at,
+        leverage=getattr(row, "leverage", 1),
     )
 
 

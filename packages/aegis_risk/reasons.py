@@ -31,6 +31,12 @@ class RejectReason(StrEnum):
     MAX_TOTAL_EXPOSURE_EXCEEDED = "max_total_exposure_exceeded"
     MAX_SYMBOL_EXPOSURE_EXCEEDED = "max_exposure_per_symbol_exceeded"
     MAX_LEVERAGE_EXCEEDED = "max_leverage_exceeded"
+    #: The intent asks for more margin than the cap allows (futures).
+    LEVERAGE_CAP_EXCEEDED = "leverage_cap_exceeded"
+    #: The notional does not fit in the margin the declared leverage provides.
+    INSUFFICIENT_LEVERAGE = "insufficient_leverage"
+    #: The liquidation price would be reached before the stop: the stop is fiction.
+    LIQUIDATION_TOO_CLOSE = "liquidation_too_close"
 
 
 class RiskCheck(StrEnum):
@@ -41,6 +47,10 @@ class RiskCheck(StrEnum):
     MARKET_DATA_FRESH = "market_data_fresh"
     DAILY_LOSS_WITHIN_LIMIT = "daily_loss_within_limit"
     WEEKLY_LOSS_WITHIN_LIMIT = "weekly_loss_within_limit"
+    #: Futures: margin checks run before the per-trade risk cap.
+    LEVERAGE_WITHIN_CAP = "leverage_within_cap"
+    MARGIN_SUFFICIENT = "margin_sufficient"
+    LIQUIDATION_BEYOND_STOP = "liquidation_beyond_stop"
     RISK_PER_TRADE_WITHIN_LIMIT = "risk_per_trade_within_limit"
     TOTAL_EXPOSURE_WITHIN_LIMIT = "total_exposure_within_limit"
     SYMBOL_EXPOSURE_WITHIN_LIMIT = "symbol_exposure_within_limit"

@@ -32,6 +32,7 @@ __all__ = [
     "ExecutionMode",
     "ExecutionSettings",
     "MarketDataSettings",
+    "MarketType",
     "ObservabilitySettings",
     "PositionMonitorSettings",
     "ReconcilerSettings",
@@ -56,6 +57,13 @@ class ExecutionMode(StrEnum):
 
     PAPER = "paper"
     LIVE = "live"
+
+
+class MarketType(StrEnum):
+    """Which market the platform trades: spot, or USDT-M futures on testnet."""
+
+    SPOT = "spot"
+    FUTURES = "futures"
 
 
 class _Section(BaseModel):
@@ -112,6 +120,14 @@ class ExecutionSettings(_Section):
     allow_live_orders: bool = False
     fee_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
     slippage_bps: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
+    #: ``spot`` (default) or ``futures`` (USDT-M, testnet only for now).
+    market_type: MarketType = MarketType.SPOT
+    #: Hard ceiling for dynamically chosen leverage. Five is the platform's word,
+    #: not a default: the field refuses anything above it.
+    max_leverage: int = Field(default=5, ge=1, le=5)
+    #: Simulated funding for paper futures: basis points per 8-hour interval
+    #: (``1`` = 0.01 %). Longs pay, shorts receive.
+    paper_funding_bps: Decimal = Field(default=Decimal("1"), ge=0, le=100)
 
     @model_validator(mode="after")
     def _broker_matches_mode(self) -> Self:
@@ -120,6 +136,11 @@ class ExecutionSettings(_Section):
             raise ValueError(
                 f"execution.broker {self.broker!r} does not match execution.mode "
                 f"{self.mode.value!r}; expected one of {allowed}"
+            )
+        if self.market_type is MarketType.FUTURES and self.mode is ExecutionMode.LIVE:
+            raise ValueError(
+                "execution.market_type 'futures' is testnet-only until it has been verified "
+                "by hand; live futures is not implemented"
             )
         return self
 
@@ -226,6 +247,8 @@ class ExchangeSettings(_Section):
     #: REST base URL. The Binance adapter refuses anything that is not a testnet
     #: host unless AEGIS_LIVE_CONFIRM is true (see aegis_execution.binance_broker).
     base_url: str = "https://testnet.binance.vision"
+    #: USDT-M Futures Testnet host. Futures refuses any other host, always.
+    futures_base_url: str = "https://testnet.binancefuture.com"
     request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
 
     @field_validator("api_key", "api_secret", mode="before")
@@ -366,6 +389,18 @@ class Settings(BaseSettings):
     def api_token_required(self) -> bool:
         """True when a token is configured and the HTTP surface must demand it."""
         return self.api_token is not None
+
+    @model_validator(mode="after")
+    def _futures_stays_on_testnet(self) -> Self:
+        """Futures is a testnet feature; a mainnet venue is refused outright."""
+        if self.execution.market_type is not MarketType.FUTURES:
+            return self
+        if self.environment is Environment.LIVE or not self.exchange.testnet:
+            raise ValueError(
+                "execution.market_type 'futures' may only run against Binance Futures "
+                "Testnet (environment != live and exchange.testnet = true)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _live_requires_credentials(self) -> Self:

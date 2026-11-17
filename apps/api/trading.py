@@ -24,6 +24,7 @@ from aegis_core import (
     OrderIntent,
     OrderType,
     Position,
+    PositionSide,
     Side,
     utc_now,
 )
@@ -70,6 +71,8 @@ def build_close_intent(position: Position, quote: MarketQuote, *, now: datetime)
         take_profit=None,
         strategy_id="manual_close",
         reason=f"manual close requested by the operator at {quote.price}",
+        leverage=position.leverage,
+        position_side=PositionSide.for_entry(Side.BUY if position.qty > 0 else Side.SELL),
         created_at=now,
     )
 

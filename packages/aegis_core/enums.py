@@ -5,6 +5,32 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class PositionSide(StrEnum):
+    """Which leg of a futures position an order belongs to (hedge mode).
+
+    On a one-way spot account there is no such thing; on USDT-M futures an order is
+    either part of the LONG leg or the SHORT leg. That is *not* the same as the order
+    side: closing a long is a SELL order on the LONG leg.
+    """
+
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+    @property
+    def sign(self) -> int:
+        return 1 if self is PositionSide.LONG else -1
+
+    @classmethod
+    def for_entry(cls, side: Side) -> PositionSide:
+        """The leg an entry on ``side`` opens."""
+        return cls.LONG if side is Side.BUY else cls.SHORT
+
+    @property
+    def closing_side(self) -> Side:
+        """The order side that reduces this leg."""
+        return Side.SELL if self is PositionSide.LONG else Side.BUY
+
+
 class Side(StrEnum):
     """Order side."""
 

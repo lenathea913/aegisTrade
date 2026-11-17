@@ -42,13 +42,19 @@ class HealthResponse(BaseModel):
     version: str
     environment: str
     execution_mode: str
+    #: ``spot`` or ``futures`` — the dashboard badge reads it.
+    market_type: str = "spot"
     database: Literal["ok", "unavailable"]
     kill_switch: bool
     time: datetime
 
 
 class PositionResponse(BaseModel):
-    """One current position, marked by the ledger."""
+    """One current position, marked by the ledger.
+
+    ``margin`` and ``liquidation_price`` are empty strings for a spot position, where
+    they have no meaning; the dashboard omits them rather than inventing numbers.
+    """
 
     symbol: str
     side: Literal["BUY", "SELL"] | None
@@ -57,6 +63,10 @@ class PositionResponse(BaseModel):
     notional: str
     unrealized_pnl: str
     realized_pnl: str
+    leverage: int = 1
+    margin: str = ""
+    liquidation_price: str = ""
+    roe_pct: str = ""
 
 
 class PositionsResponse(BaseModel):

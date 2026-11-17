@@ -64,6 +64,8 @@ def test_rejection_lists_multiple_violations_without_short_circuit(
         RejectReason.MAX_TOTAL_EXPOSURE_EXCEEDED.value,
         RejectReason.MAX_SYMBOL_EXPOSURE_EXCEEDED.value,
         RejectReason.MAX_LEVERAGE_EXCEEDED.value,
+        # 15 000 notional on a 10 000 equity account at 1x: more margin than exists.
+        RejectReason.INSUFFICIENT_LEVERAGE.value,
     }
     assert decision.max_risk_amount == 0
 

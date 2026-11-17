@@ -14,20 +14,31 @@ import httpx
 
 from aegis_marketdata.instruments import InstrumentSpec, parse_exchange_info
 
-__all__ = ["BINANCE_MAINNET_BASE_URL", "BINANCE_TESTNET_BASE_URL", "fetch_instruments"]
+__all__ = [
+    "BINANCE_MAINNET_BASE_URL",
+    "BINANCE_TESTNET_BASE_URL",
+    "FUTURES_EXCHANGE_INFO_PATH",
+    "SPOT_EXCHANGE_INFO_PATH",
+    "fetch_instruments",
+]
 
 BINANCE_TESTNET_BASE_URL = "https://testnet.binance.vision"
 BINANCE_MAINNET_BASE_URL = "https://api.binance.com"
+SPOT_EXCHANGE_INFO_PATH = "/api/v3/exchangeInfo"
+#: USDT-M futures publish their filters on a different path; ticks differ from spot
+#: (BTCUSDT quotes 0.10 on futures, 0.01 on spot), so the dashboard must use this one.
+FUTURES_EXCHANGE_INFO_PATH = "/fapi/v1/exchangeInfo"
 
 
 def fetch_instruments(
     base_url: str,
     *,
+    path: str = SPOT_EXCHANGE_INFO_PATH,
     timeout_seconds: float = 10.0,
     client: httpx.Client | None = None,
 ) -> dict[str, InstrumentSpec]:
-    """GET ``/api/v3/exchangeInfo`` and return the parsed precision map."""
-    url = f"{base_url.rstrip('/')}/api/v3/exchangeInfo"
+    """GET ``exchangeInfo`` (spot or futures) and return the parsed precision map."""
+    url = f"{base_url.rstrip('/')}{path}"
     if client is not None:
         payload: Mapping[str, Any] = client.get(url).raise_for_status().json()
         return parse_exchange_info(payload)

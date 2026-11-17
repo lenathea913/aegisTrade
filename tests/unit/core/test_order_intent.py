@@ -33,7 +33,16 @@ def test_domain_objects_are_frozen(make_intent: Callable[..., OrderIntent]) -> N
 
 def test_unknown_field_is_rejected(make_intent: Callable[..., OrderIntent]) -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
-        make_intent(leverage=Decimal("3"))
+        make_intent(bogus_field=Decimal("3"))
+
+
+@pytest.mark.parametrize("leverage", [0, 6, 10])
+def test_leverage_is_capped_by_the_domain(
+    make_intent: Callable[..., OrderIntent], leverage: int
+) -> None:
+    """The hard cap lives in the type, so no caller can ask a broker for 6x."""
+    with pytest.raises(ValidationError):
+        make_intent(leverage=leverage)
 
 
 @pytest.mark.parametrize("qty", ["0", "-1", "-0.01"])

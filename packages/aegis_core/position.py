@@ -19,6 +19,7 @@ from aegis_core.base import StrictModel
 from aegis_core.clock import utc_now
 from aegis_core.enums import Side
 from aegis_core.errors import DomainError
+from aegis_core.leverage import MAX_LEVERAGE, liquidation_price, margin_for, roe_pct
 from aegis_core.types import FiniteDecimal, NonNegativeDecimal, SymbolStr, UtcDatetime
 
 __all__ = ["Position"]
@@ -41,6 +42,8 @@ class Position(StrictModel):
     avg_entry: NonNegativeDecimal = _ZERO
     unrealized_pnl: FiniteDecimal = _ZERO
     realized_pnl: FiniteDecimal = _ZERO
+    #: Margin multiplier of the open leg (1 = spot). Reserved for the leg's lifetime.
+    leverage: int = Field(default=1, ge=1, le=MAX_LEVERAGE)
     opened_at: UtcDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -49,6 +52,8 @@ class Position(StrictModel):
             raise ValueError("a flat position (qty == 0) must have avg_entry == 0")
         if self.qty != 0 and self.avg_entry == 0:
             raise ValueError("a non-flat position must have a positive avg_entry")
+        if self.qty == 0 and self.leverage != 1:
+            raise ValueError("a flat position posts no margin, so leverage must be 1")
         return self
 
     @classmethod
@@ -75,6 +80,23 @@ class Position(StrictModel):
         """Exposure at cost basis (absolute, quote currency)."""
         return self.abs_qty * self.avg_entry
 
+    @property
+    def margin_used(self) -> Decimal:
+        """Isolated collateral committed by this position (``notional / leverage``)."""
+        return margin_for(self.notional, self.leverage)
+
+    @property
+    def liquidation_price(self) -> Decimal | None:
+        """Estimated liquidation price, or ``None`` for a flat book."""
+        if self.is_flat or self.side is None:
+            return None
+        return liquidation_price(self.avg_entry, self.side, self.leverage)
+
+    @property
+    def roe_pct(self) -> Decimal:
+        """Unrealized PnL as a percentage of the posted margin."""
+        return roe_pct(self.unrealized_pnl, self.margin_used)
+
     def with_mark(self, price: Decimal) -> Position:
         """Return the position re-marked at ``price`` (unrealized PnL only)."""
         if price <= 0:
@@ -83,8 +105,11 @@ class Position(StrictModel):
             return self.model_copy(update={"unrealized_pnl": _ZERO})
         return self.model_copy(update={"unrealized_pnl": (price - self.avg_entry) * self.qty})
 
-    def apply_fill(self, qty: Decimal, price: Decimal) -> Position:
+    def apply_fill(self, qty: Decimal, price: Decimal, *, leverage: int | None = None) -> Position:
         """Apply a signed fill (``+`` buy, ``-`` sell) at ``price``.
+
+        ``leverage`` applies only when the fill *opens* a leg: a reduction keeps the
+        leverage the position was opened with, because margin was posted then.
 
         Three cases, all tested:
             * same direction (or opening) -> quantity grows, cost basis is the
@@ -111,6 +136,7 @@ class Position(StrictModel):
                     "qty": new_qty,
                     "avg_entry": avg_entry,
                     "unrealized_pnl": _ZERO,
+                    "leverage": self.leverage if leverage is None else leverage,
                 }
             )
 
@@ -125,6 +151,7 @@ class Position(StrictModel):
                     "avg_entry": _ZERO,
                     "unrealized_pnl": _ZERO,
                     "realized_pnl": realized,
+                    "leverage": 1,
                 }
             )
         if (new_qty > 0) == (self.qty > 0):
@@ -139,6 +166,7 @@ class Position(StrictModel):
                 "avg_entry": price,
                 "unrealized_pnl": _ZERO,
                 "realized_pnl": realized,
+                "leverage": self.leverage if leverage is None else leverage,
             }
         )
 

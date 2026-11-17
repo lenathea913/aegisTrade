@@ -20,6 +20,10 @@
         <th class="px-4 py-2">Notional</th>
         <th class="px-4 py-2">Unrealized</th>
         <th class="px-4 py-2">Realized</th>
+        <th class="px-4 py-2">Leverage</th>
+        <th class="px-4 py-2">Margin</th>
+        <th class="px-4 py-2">Liq. Price</th>
+        <th class="px-4 py-2">Unrealized (ROE%)</th>
         <th class="px-4 py-2 text-right">Action</th>
       </tr>
     </thead>
@@ -40,6 +44,24 @@
           {{ unrealized }}
         </td>
         <td class="px-4 py-2 font-mono">{{ position.realized_pnl | money }}</td>
+        <td class="px-4 py-2 font-mono">
+          {{ position.leverage }}x{% if position.leverage > 1 %} <span class="text-xs text-indigo-300">ISOLATED</span>{% endif %}
+        </td>
+        <td class="px-4 py-2 font-mono">{{ (position.margin | money) if position.margin else "—" }}</td>
+        <td class="px-4 py-2 font-mono">
+          {% if position.liquidation_price %}
+            {{ position.liquidation_price | price(position.symbol) }}
+          {% else %}—{% endif %}
+        </td>
+        {% set roe = position.roe_pct %}
+        <td class="px-4 py-2 font-mono">
+          <span class="{{ 'text-rose-300' if unrealized.startswith('-') else 'text-emerald-300' }}">{{ unrealized }}</span>
+          {% if position.leverage > 1 %}
+            <span class="ml-1 text-xs {{ 'text-rose-300' if (roe and roe.startswith('-')) else 'text-emerald-300' }}">
+              ({{ (roe | money) }}%)
+            </span>
+          {% endif %}
+        </td>
         <td class="px-4 py-2 text-right">
           <button
             class="rounded border border-rose-500/40 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/10"

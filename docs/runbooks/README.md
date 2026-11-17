@@ -15,6 +15,7 @@ do.
 | [rejection-triage.md](rejection-triage.md) | Risk rejections need explaining |
 | [autonomous-trading.md](autonomous-trading.md) | Starting, stopping or watching the runner daemon |
 | [live-trading-setup.md](live-trading-setup.md) | Moving from paper → testnet → live money |
+| [futures-trading.md](futures-trading.md) | Running USDT-M futures (testnet), leverage and margin |
 
 ## Principles
 

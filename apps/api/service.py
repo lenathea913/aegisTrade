@@ -87,6 +87,7 @@ class ApiService:
             version=__version__,
             environment=self._settings.environment.value,
             execution_mode=self._settings.execution.mode.value,
+            market_type=self._settings.execution.market_type.value,
             database="ok" if database_ok else "unavailable",
             kill_switch=self._settings.risk.kill_switch,
             time=self._clock(),
@@ -146,6 +147,12 @@ class ApiService:
                 notional=str(position.notional),
                 unrealized_pnl=str(position.unrealized_pnl),
                 realized_pnl=str(position.realized_pnl),
+                leverage=position.leverage,
+                margin=str(position.margin_used),
+                liquidation_price=(
+                    "" if position.liquidation_price is None else str(position.liquidation_price)
+                ),
+                roe_pct=str(position.roe_pct),
             )
             for position in state.open_positions
         ]

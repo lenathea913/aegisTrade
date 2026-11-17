@@ -92,5 +92,7 @@ class ExecutionGateway:
             fee=fill.fee,
             filled_at=fill.filled_at,
             strategy_id=approved.strategy_id,
+            # The leverage the gate approved is the leverage the trade is booked at.
+            leverage=approved.intent.leverage,
         )
         return ExecutionResult(approved=approved, order=order, fill=fill, trade=trade)

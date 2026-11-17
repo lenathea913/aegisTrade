@@ -141,14 +141,25 @@ def build_broker(
     if settings.broker == "live":
         return LiveBroker()
     if settings.broker == "binance-testnet":
-        from aegis_execution.binance_broker import BinanceTestnetBroker
-
         if exchange is None or not exchange.configured:
             raise ValueError(
                 "execution.broker 'binance-testnet' requires exchange credentials "
                 "(AEGIS_EXCHANGE__API_KEY / AEGIS_EXCHANGE__API_SECRET)"
             )
         assert exchange.api_key is not None and exchange.api_secret is not None
+        if settings.market_type.value == "futures":
+            # USDT-M futures: a different host and API surface, testnet only.
+            from aegis_execution.binance_futures_broker import (
+                BinanceFuturesTestnetBroker,
+            )
+
+            return BinanceFuturesTestnetBroker(
+                api_key=exchange.api_key,
+                api_secret=exchange.api_secret,
+                base_url=exchange.futures_base_url,
+            )
+        from aegis_execution.binance_broker import BinanceTestnetBroker
+
         return BinanceTestnetBroker(
             api_key=exchange.api_key,
             api_secret=exchange.api_secret,

@@ -20,6 +20,8 @@ execution:
   mode: paper
   broker: paper
   allow_live_orders: false
+  market_type: spot    # spot | futures (futures = USDT-M testnet only)
+  max_leverage: 5      # hard ceiling for the DYNAMIC leverage; cannot exceed 5
   fee_bps: 5          # 5 bps taker fee on paper fills
   slippage_bps: 5     # adverse slippage applied to paper market fills
 

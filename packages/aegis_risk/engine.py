@@ -30,6 +30,8 @@ from pydantic import Field
 from aegis_alerting import Alerter, alert_for_rejection
 from aegis_config import Settings
 from aegis_core import (
+    MAINTENANCE_MARGIN_PCT,
+    MAX_LEVERAGE,
     MarketContext,
     OrderIntent,
     PortfolioState,
@@ -39,6 +41,7 @@ from aegis_core import (
     Side,
     StrictModel,
     Timeframe,
+    liquidation_price,
 )
 from aegis_risk.reasons import RejectReason, RiskCheck
 
@@ -183,6 +186,55 @@ def evaluate(
 
     if reducing:
         return _finalise(failures, checks, risk_amount)
+
+    # Futures margin rules. A spot intent (leverage 1) passes all three trivially,
+    # so one code path judges both market types.
+    leverage_cap = min(risk_limits.max_leverage, Decimal(MAX_LEVERAGE))
+    if Decimal(intent.leverage) > leverage_cap:
+        failures.append(
+            _detail(
+                RejectReason.LEVERAGE_CAP_EXCEEDED,
+                f"{intent.leverage}x>{int(leverage_cap)}x",
+            )
+        )
+    else:
+        checks.append(RiskCheck.LEVERAGE_WITHIN_CAP.value)
+
+    # The notional must fit inside the margin the declared leverage provides. Sizing
+    # keeps a buffer (``MARGIN_UTILISATION``); the gate only enforces the hard limit.
+    margin_available = equity * Decimal(intent.leverage)
+    if notional > margin_available:
+        failures.append(
+            _detail(
+                RejectReason.INSUFFICIENT_LEVERAGE,
+                f"notional={notional}>{margin_available}",
+            )
+        )
+    else:
+        checks.append(RiskCheck.MARGIN_SUFFICIENT.value)
+
+    # The stop must be hit before the liquidation price; otherwise the risk the
+    # position was sized from is unreachable and an ordinary wick liquidates it.
+    liquidation = liquidation_price(
+        entry_price,
+        intent.side,
+        intent.leverage,
+        maintenance_margin_pct=MAINTENANCE_MARGIN_PCT,
+    )
+    stop_beyond_liquidation = (
+        liquidation < intent.stop_loss
+        if intent.side is Side.BUY
+        else liquidation > intent.stop_loss
+    )
+    if not stop_beyond_liquidation:
+        failures.append(
+            _detail(
+                RejectReason.LIQUIDATION_TOO_CLOSE,
+                f"liq={liquidation} stop={intent.stop_loss} leverage={intent.leverage}x",
+            )
+        )
+    else:
+        checks.append(RiskCheck.LIQUIDATION_BEYOND_STOP.value)
 
     # Rule 2: risk per trade.
     max_risk_amount = equity * risk_limits.max_risk_per_trade_pct / _HUNDRED

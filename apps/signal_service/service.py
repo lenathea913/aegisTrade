@@ -26,17 +26,21 @@ from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from aegis_core import (
+    MARGIN_UTILISATION,
+    MAX_LEVERAGE,
     Candle,
     MarketContext,
     MarketQuote,
     OrderIntent,
     OrderType,
+    PositionSide,
     RiskDecision,
     Side,
     Signal,
     SignalDirection,
     SignalStatus,
     Timeframe,
+    choose_leverage,
     utc_now,
 )
 from aegis_ledger import PortfolioLedger
@@ -245,16 +249,36 @@ class SignalService:
         )
 
     def _intent_for(self, signal: Signal, now: datetime) -> OrderIntent:
-        """Size the idea to the per-trade risk budget and wrap it as an intent."""
+        """Size the idea to the per-trade risk budget and wrap it as an intent.
+
+        Sizing is fixed-fractional: the loss at the stop is exactly the per-trade risk
+        budget. That notional may need more cash than the account holds, so the
+        leverage is *derived* from it (the smallest multiple that fits, never above the
+        cap) rather than configured per trade. A wide stop needs no leverage; a tight
+        one does.
+        """
         risk_per_unit = abs(signal.entry_ref - signal.stop_loss)
         if risk_per_unit <= 0:
             raise SignalStateError("stop equals entry: risk cannot be measured")
 
         state = self._ledger.snapshot(now=now)
-        capacity = state.equity * self._gate.limits.max_risk_per_trade_pct / _HUNDRED
+        risk_pct = self._gate.limits.max_risk_per_trade_pct
+        max_leverage = min(int(self._gate.limits.max_leverage), MAX_LEVERAGE)
+        leverage = choose_leverage(
+            equity=state.equity,
+            entry=signal.entry_ref,
+            stop_loss=signal.stop_loss,
+            risk_pct=risk_pct,
+            max_leverage=max_leverage,
+        )
+        capacity = state.equity * risk_pct / _HUNDRED
+        # Two independent ceilings: the risk budget (never risk more) and the margin
+        # available at this leverage (never post more collateral than exists).
+        qty_for_risk = capacity / risk_per_unit
+        qty_for_margin = state.equity * Decimal(leverage) * MARGIN_UTILISATION / signal.entry_ref
         # Round *down*: a quantity rounded up would make the order exceed the very
         # cap it was sized from, and the gate would reject its own sizing.
-        qty = (capacity / risk_per_unit).quantize(_QUANTUM, rounding=ROUND_DOWN)
+        qty = min(qty_for_risk, qty_for_margin).quantize(_QUANTUM, rounding=ROUND_DOWN)
         if qty <= 0:
             raise SignalStateError("risk budget leaves no room for this signal")
 
@@ -268,6 +292,8 @@ class SignalService:
             take_profit=signal.take_profit,
             strategy_id=signal.strategy_id,
             reason=f"signal {signal.signal_id} ({signal.direction.value})",
+            leverage=leverage,
+            position_side=PositionSide.for_entry(signal.direction.side),
             created_at=now,
         )
 

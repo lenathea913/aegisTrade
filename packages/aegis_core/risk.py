@@ -16,6 +16,7 @@ from typing import Self
 from pydantic import model_validator
 
 from aegis_core.base import StrictModel
+from aegis_core.leverage import MAX_LEVERAGE
 from aegis_core.types import (
     ExposurePercent,
     LeverageDecimal,
@@ -38,6 +39,7 @@ class RiskLimit(StrictModel):
     max_weekly_loss_pct: Percent = Decimal("5")
     max_exposure_per_symbol_pct: ExposurePercent = Decimal("20")
     max_total_exposure_pct: ExposurePercent = Decimal("60")
+    #: Ceiling for ``OrderIntent.leverage``; the domain cap always wins.
     max_leverage: LeverageDecimal = Decimal("1")
     allowed_symbols: frozenset[SymbolStr] = frozenset()
 
@@ -49,6 +51,9 @@ class RiskLimit(StrictModel):
             raise ValueError(
                 "max_exposure_per_symbol_pct must be <= max_total_exposure_pct",
             )
+        if self.max_leverage > MAX_LEVERAGE:
+            # The cap exists so no configuration mistake can liquidate the account.
+            raise ValueError(f"max_leverage must be <= {MAX_LEVERAGE}")
         return self
 
     def allows(self, symbol: str) -> bool:

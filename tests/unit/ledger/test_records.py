@@ -95,7 +95,15 @@ def test_position_row_matches_the_table_shape() -> None:
     assert row["symbol"] == "BTC/USDT"
     assert row["qty"] == Decimal("-0.3")
     assert row["avg_entry"] == Decimal("31000")
-    assert set(row) == {"symbol", "qty", "avg_entry", "unrealized_pnl", "realized_pnl", "opened_at"}
+    assert set(row) == {
+        "symbol",
+        "qty",
+        "avg_entry",
+        "unrealized_pnl",
+        "realized_pnl",
+        "leverage",
+        "opened_at",
+    }
 
 
 def test_audit_row_uses_the_stable_event_name() -> None:

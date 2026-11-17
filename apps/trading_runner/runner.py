@@ -26,6 +26,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from aegis_alerting import Alerter
@@ -295,6 +296,7 @@ class TradingRunner:
         """Check every protected position once; exits go through the pipeline."""
         if not self._settings.runner.monitor_enabled:
             return ()
+        self._accrue_funding()
         with self._writer_factory() as writer:
             monitor = self._monitor(writer)
             actions = monitor.check()
@@ -314,6 +316,21 @@ class TradingRunner:
                     motivation=get_random_motivation(),
                 )
         return actions
+
+    def _accrue_funding(self) -> None:
+        """Paper futures only: charge simulated funding every 8 hours.
+
+        A real venue debits funding; without this a paper position held for days would
+        look better than the identical position on the exchange. Spot and testnet
+        brokers are untouched (the latter reports its own funding).
+        """
+        execution = self._settings.execution
+        if execution.market_type.value != "futures" or execution.broker != "paper":
+            return
+        rate = execution.paper_funding_bps / Decimal("10000")
+        charged = self._ledger.accrue_funding(self._clock(), rate=rate)
+        if charged:
+            self._logger.info("runner_funding_accrued", amount=str(charged))
 
     def run_once(self) -> RunnerReport:
         """One pass of both cycles — used by ``--once`` and by the tests."""

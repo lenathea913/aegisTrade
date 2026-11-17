@@ -1,8 +1,9 @@
 """AegisTrade execution.
 
 ``OrderIntent -> RiskGate -> ApprovedOrder -> ExecutionGateway -> broker``, with the
-paper broker as the default venue, ``BinanceTestnetBroker`` as the first real exchange
-adapter (testnet only) and ``LiveBroker`` a stub that refuses everything.
+paper broker as the default venue, ``BinanceTestnetBroker`` for spot and
+``BinanceFuturesTestnetBroker`` for USDT-M (both testnet only) and ``LiveBroker`` a stub
+that refuses everything.
 ``TradingPipeline`` is the single composition of gate, gateway and ledger, so there is
 one code path to audit and one to test.
 """
@@ -14,6 +15,11 @@ from aegis_execution.binance_broker import (
     ExchangeOrderState,
     ensure_testnet_base_url,
     from_exchange_symbol,
+)
+from aegis_execution.binance_futures_broker import (
+    BinanceFuturesTestnetBroker,
+    FuturesPosition,
+    ensure_futures_testnet_base_url,
 )
 from aegis_execution.broker import Broker, BrokerFill, LiveBroker, PaperBroker, build_broker
 from aegis_execution.errors import (
@@ -28,6 +34,7 @@ from aegis_execution.gateway import ExecutionGateway, ExecutionResult
 from aegis_execution.pipeline import PipelineResult, TradingPipeline
 
 __all__ = [
+    "BinanceFuturesTestnetBroker",
     "BinanceTestnetBroker",
     "Broker",
     "BrokerFill",
@@ -38,6 +45,7 @@ __all__ = [
     "ExecutionError",
     "ExecutionGateway",
     "ExecutionResult",
+    "FuturesPosition",
     "LiveBroker",
     "LiveTradingDisabledError",
     "NonTestnetEndpointError",
@@ -45,6 +53,7 @@ __all__ = [
     "PipelineResult",
     "TradingPipeline",
     "build_broker",
+    "ensure_futures_testnet_base_url",
     "ensure_testnet_base_url",
     "from_exchange_symbol",
 ]

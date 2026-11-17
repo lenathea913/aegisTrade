@@ -261,6 +261,27 @@ def test_conversion_works_again_once_the_position_is_flat() -> None:
     assert ledger.position(SYMBOL).is_flat
 
 
+def test_conversion_derives_leverage_from_the_stop_distance() -> None:
+    """Fixed-fractional sizing asks for the smallest leverage that fits, never > 5."""
+    service, _, _ = build_service(risk_gate=gate(max_leverage=Decimal("5")))
+
+    conversion = service.convert(service.generate()[0].signal_id)
+
+    assert 1 <= conversion.intent.leverage <= 5
+    # Rounding up (ceil) is what keeps the position inside its margin.
+    entry = conversion.intent.price
+    assert entry is not None
+    assert conversion.intent.qty * entry <= 10000 * conversion.intent.leverage
+
+
+def test_spot_limits_keep_every_intent_at_one_x() -> None:
+    service, _, _ = build_service()  # RiskLimit defaults to max_leverage 1
+
+    conversion = service.convert(service.generate()[0].signal_id)
+
+    assert conversion.intent.leverage == 1
+
+
 def test_converting_twice_is_refused() -> None:
     service, _, _ = build_service()
     signal = service.generate()[0]

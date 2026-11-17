@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -115,6 +116,9 @@ class PositionRecord(Base):
     realized_pnl: Mapped[Decimal] = mapped_column(
         Numeric(28, 12), nullable=False, server_default=text("0")
     )
+    #: Margin multiplier of the open leg (1 = spot). Display and ROE only: PnL on a
+    #: linear contract is independent of leverage.
+    leverage: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -155,6 +159,8 @@ class TradeRecord(Base):
     filled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     strategy_id: Mapped[str] = mapped_column(String(64), nullable=False)
     r_multiple: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
+    #: Leverage of the leg this fill belonged to (1 = spot/unleveraged).
+    leverage: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
 
 
 class SignalRecord(Base):

@@ -25,9 +25,10 @@ from pydantic import Field, model_validator
 
 from aegis_core.base import StrictModel
 from aegis_core.clock import utc_now
-from aegis_core.enums import OrderStatus, OrderType, Side
+from aegis_core.enums import OrderStatus, OrderType, PositionSide, Side
 from aegis_core.errors import DomainError, InvalidStateTransitionError
 from aegis_core.ids import new_id
+from aegis_core.leverage import MAX_LEVERAGE, liquidation_price, margin_for
 from aegis_core.types import (
     NonEmptyStr,
     NonNegativeDecimal,
@@ -50,6 +51,11 @@ class OrderIntent(StrictModel):
         * ``LIMIT`` requires ``price``; ``MARKET`` may carry a reference price.
         * A stop/take-profit that sits on the wrong side of the reference price is
           a bug in the strategy, not a market condition, and is rejected here.
+        * ``leverage`` is the margin multiplier the intent wants (1 = spot). It is
+          capped by the domain, not by configuration, so no caller can ask a broker
+          for more than :data:`aegis_core.leverage.MAX_LEVERAGE`.
+        * ``position_side`` is set for futures hedge mode: an order may open a leg or
+          close it, and only the intent knows which was meant.
     """
 
     symbol: SymbolStr
@@ -61,6 +67,10 @@ class OrderIntent(StrictModel):
     take_profit: PositiveDecimal | None = None
     strategy_id: StrategyId
     reason: Reason
+    #: Margin multiplier (1 = spot-equivalent), never above ``MAX_LEVERAGE``.
+    leverage: int = Field(default=1, ge=1, le=MAX_LEVERAGE)
+    #: Futures leg this order belongs to; ``None`` means "derive it from the side".
+    position_side: PositionSide | None = None
     created_at: UtcDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -108,6 +118,29 @@ class OrderIntent(StrictModel):
         if reference is None:
             return None
         return self.qty * reference
+
+    @property
+    def resolved_position_side(self) -> PositionSide:
+        """The futures leg: explicit when given, otherwise implied by the side."""
+        return self.position_side or PositionSide.for_entry(self.side)
+
+    @property
+    def is_reducing(self) -> bool:
+        """True when the order closes an existing leg rather than opening one."""
+        return self.position_side is not None and self.position_side.closing_side is self.side
+
+    @property
+    def margin(self) -> Decimal | None:
+        """Isolated margin this intent would post (``notional / leverage``)."""
+        notional = self.notional()
+        return None if notional is None else margin_for(notional, self.leverage)
+
+    def liquidation_price(self, entry: Decimal | None = None) -> Decimal | None:
+        """Estimated liquidation price at this leverage (``None`` without a price)."""
+        reference = entry if entry is not None else self.price
+        if reference is None:
+            return None
+        return liquidation_price(reference, self.side, self.leverage)
 
 
 class ApprovedOrder(StrictModel):
@@ -164,6 +197,14 @@ class ApprovedOrder(StrictModel):
         return self.intent.strategy_id
 
     @property
+    def leverage(self) -> int:
+        return self.intent.leverage
+
+    @property
+    def position_side(self) -> PositionSide | None:
+        return self.intent.position_side
+
+    @property
     def created_at(self) -> datetime:
         return self.intent.created_at
 
@@ -188,6 +229,10 @@ class Order(StrictModel):
     exchange_order_id: NonEmptyStr | None = None
     filled_qty: NonNegativeDecimal = Decimal("0")
     avg_fill_price: PositiveDecimal | None = None
+    #: Futures leg, carried from the approval so the broker can address the right leg.
+    position_side: PositionSide | None = None
+    #: Margin multiplier the broker must set before sending this order.
+    leverage: int = Field(default=1, ge=1, le=MAX_LEVERAGE)
     created_at: UtcDatetime = Field(default_factory=utc_now)
     updated_at: UtcDatetime = Field(default_factory=utc_now)
 
@@ -216,6 +261,8 @@ class Order(StrictModel):
             qty=approved.qty,
             price=approved.price,
             broker=broker,
+            position_side=approved.intent.position_side,
+            leverage=approved.intent.leverage,
         )
 
     @property

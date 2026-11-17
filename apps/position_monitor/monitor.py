@@ -29,6 +29,7 @@ from aegis_core import (
     OrderIntent,
     OrderType,
     Position,
+    PositionSide,
     Side,
     utc_now,
 )
@@ -217,5 +218,10 @@ class PositionMonitor:
             take_profit=None,
             strategy_id=self._strategy_id,
             reason=f"position_monitor: {trigger.value} touched at {quote.price} (level {level})",
+            # The exit belongs to the leg it closes: on futures hedge mode a SELL that
+            # closes a long must still be addressed to the LONG leg. Leverage is the
+            # leg's, so the closing trade is booked against the same margin.
+            leverage=position.leverage,
+            position_side=PositionSide.for_entry(protection.side),
             created_at=now,
         )

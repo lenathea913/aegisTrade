@@ -10,6 +10,7 @@ from aegis_core.base import StrictModel
 from aegis_core.clock import utc_now
 from aegis_core.enums import Side
 from aegis_core.ids import new_id
+from aegis_core.leverage import MAX_LEVERAGE
 from aegis_core.types import (
     FiniteDecimal,
     NonEmptyStr,
@@ -47,6 +48,8 @@ class Trade(StrictModel):
     filled_at: UtcDatetime = Field(default_factory=utc_now)
     strategy_id: StrategyId
     r_multiple: FiniteDecimal | None = None
+    #: Margin multiplier of the leg this fill belonged to (1 = spot/unleveraged).
+    leverage: int = Field(default=1, ge=1, le=MAX_LEVERAGE)
 
     @property
     def notional(self) -> Decimal:

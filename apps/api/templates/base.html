@@ -37,6 +37,13 @@
           <span class="rounded px-2 py-1 font-semibold tracking-wide {{ mode_tone }}" title="Execution mode">
             {{ mode }} MODE
           </span>
+          {% set market = health.market_type if health else "spot" %}
+          <span
+            class="rounded px-2 py-1 font-semibold tracking-wide {% if market == 'futures' %}bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-400/50{% else %}bg-slate-800 text-slate-400{% endif %}"
+            title="Market type (futures = USDT-M testnet, isolated margin)"
+          >
+            {{ market | upper }}
+          </span>
           {% if exchange %}
             <span
               class="flex items-center gap-1.5 rounded px-2 py-1 {% if exchange.connected %}bg-emerald-500/10 text-emerald-300{% else %}bg-rose-500/20 text-rose-100 ring-1 ring-rose-500/50{% endif %}"

@@ -128,6 +128,7 @@ class PortfolioLedger:
     _marks: dict[str, Decimal] = field(default_factory=dict, repr=False)
     _realized: list[RealizedEvent] = field(default_factory=list, repr=False)
     _protections: dict[str, PositionProtection] = field(default_factory=dict, repr=False)
+    _last_funding: dict[str, datetime] = field(default_factory=dict, repr=False)
     _clock: Callable[[], datetime] = field(default=utc_now, repr=False)
 
     def __post_init__(self) -> None:
@@ -186,7 +187,7 @@ class PortfolioLedger:
     def apply_trade(self, trade: Trade) -> LedgerUpdate:
         """Apply one executed trade: update the position, costs and marks."""
         current = self.position(trade.symbol)
-        updated = current.apply_fill(trade.signed_qty, trade.price)
+        updated = current.apply_fill(trade.signed_qty, trade.price, leverage=trade.leverage)
 
         # Costs belong to the realization moment, so the equity effect is immediate.
         realized_delta = (updated.realized_pnl - current.realized_pnl) - trade.fee + trade.funding
@@ -196,6 +197,10 @@ class PortfolioLedger:
             # A flat position cannot have a stop; leaving one behind would let a
             # monitor fire an exit against exposure that no longer exists.
             self._protections.pop(updated.symbol, None)
+            self._last_funding.pop(updated.symbol, None)
+        else:
+            # Funding accrues from the moment the position exists.
+            self._last_funding.setdefault(updated.symbol, trade.filled_at)
         self._realized.append(
             RealizedEvent(
                 amount=realized_delta,
@@ -211,6 +216,62 @@ class PortfolioLedger:
             realized_delta=realized_delta,
             equity=self.equity,
         )
+
+    @property
+    def margin_used(self) -> Decimal:
+        """Total isolated collateral committed by the open positions."""
+        return sum((position.margin_used for position in self._positions.values()), _ZERO)
+
+    def accrue_funding(
+        self,
+        now: datetime,
+        *,
+        rate: Decimal,
+        interval_hours: int = 8,
+    ) -> Decimal:
+        """Charge simulated funding on open positions; return the total cost paid.
+
+        Futures charge funding every ``interval_hours`` on the *notional*: longs pay
+        when ``rate`` is positive, shorts receive it. Paper mode has no venue to do
+        this, so the ledger does it — without it a multi-day paper position would look
+        more profitable than the same position on an exchange.
+
+        Only whole intervals are charged, and the clock restarts from ``now`` for the
+        settled portion, so calling this every minute charges exactly as often as one
+        call every eight hours.
+        """
+        if rate < 0:
+            raise LedgerError("funding rate must not be negative")
+        if interval_hours <= 0:
+            raise LedgerError("funding interval must be positive")
+        interval = timedelta(hours=interval_hours)
+        total = _ZERO
+        for position in self._positions.values():
+            if position.is_flat:
+                continue
+            last = self._last_funding.setdefault(position.symbol, now)
+            elapsed = now - last
+            periods = int(elapsed.total_seconds() // interval.total_seconds())
+            if periods <= 0:
+                continue
+            price = self._marks.get(position.symbol) or position.avg_entry
+            notional = price * position.abs_qty
+            # Longs pay a positive rate, shorts receive it (and pay a negative one).
+            direction = Decimal(1) if position.qty > 0 else Decimal(-1)
+            cost = notional * rate * periods * direction
+            updated = position.model_copy(update={"realized_pnl": position.realized_pnl - cost})
+            self._positions[position.symbol] = updated
+            self._realized.append(
+                RealizedEvent(
+                    amount=-cost,
+                    at=now,
+                    trade_id=f"funding-{position.symbol}",
+                    symbol=position.symbol,
+                )
+            )
+            self._last_funding[position.symbol] = last + interval * periods
+            total += cost
+        return total
 
     def mark_price(self, symbol: str, price: Decimal) -> None:
         """Mark ``symbol`` to ``price``; the position's unrealized PnL follows."""
@@ -289,10 +350,11 @@ class PortfolioLedger:
         self._marks.clear()
         self._realized.clear()
         self._protections.clear()
+        self._last_funding.clear()
 
         for trade in replayed:
             current = self.position(trade.symbol)
-            updated = current.apply_fill(trade.signed_qty, trade.price)
+            updated = current.apply_fill(trade.signed_qty, trade.price, leverage=trade.leverage)
             realized_delta = (
                 (updated.realized_pnl - current.realized_pnl) - trade.fee + trade.funding
             )

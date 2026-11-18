@@ -29,7 +29,12 @@ from aegis_ledger import AuditEvent, EventType, LedgerError, LedgerStore, Portfo
 from aegis_observability import configure_logging, get_logger
 from order_reconciler.fills import SqlVenueFillRecorder
 from order_reconciler.positions import PositionDrift, PositionReconciler, VenueFill, VenueLeg
-from order_reconciler.protection import ProtectionReArmer, ReArmResult, VenueProtection
+from order_reconciler.protection import (
+    ProtectionAlertGate,
+    ProtectionReArmer,
+    ReArmResult,
+    VenueProtection,
+)
 from order_reconciler.reconciler import OrderReconciler, ReconciliationResult
 from order_reconciler.repository import SqlOrderBook
 from order_reconciler.state import SqlReconciliationState
@@ -43,6 +48,49 @@ __all__ = [
     "reconcile_positions_once",
     "result_payload",
 ]
+
+#: What a broker must expose before its protection orders can be verified or re-placed.
+_PROTECTION_CALLS = ("fetch_open_order_ids", "cancel_protection_orders", "submit_protection_order")
+
+
+def _check_protection(
+    broker: Any,
+    factory: sessionmaker[Session],
+    ledger: PortfolioLedger,
+    *,
+    alerter: Alerter | None,
+    alert_gate: ProtectionAlertGate | None = None,
+) -> tuple[ReArmResult, ...]:
+    """Verify every open position's venue stop once, re-placing what is gone.
+
+    Shared by the startup check and by every reconciliation cycle, so the two paths can
+    never drift apart: the position row says a stop *should* exist, and only the venue
+    says whether it still does.
+    """
+    logger = get_logger("aegis.protection_rearm")
+    if not all(callable(getattr(broker, name, None)) for name in _PROTECTION_CALLS):
+        logger.info(
+            "protection_rearm_skipped",
+            reason="broker cannot hold protection orders (spot does not need this)",
+        )
+        return ()
+    rearmer = ProtectionReArmer(
+        ledger=ledger,
+        venue=cast(VenueProtection, broker),
+        writer_factory=lambda: _ledger_writer(factory),
+        alerter=alerter,
+        alert_gate=alert_gate,
+    )
+    results = rearmer.run()
+    for result in results:
+        logger.info(
+            "protection_check",
+            symbol=result.symbol,
+            status=result.status,
+            reason=result.reason,
+            stop_order_id=result.stop_order_id,
+        )
+    return results
 
 
 class _BrokerFeed:
@@ -142,11 +190,17 @@ def reconcile_positions_once(
     *,
     broker: Any = None,
     alerter: Alerter | None = None,
+    check_protection: bool = True,
+    alert_gate: ProtectionAlertGate | None = None,
 ) -> tuple[PositionDrift, ...]:
     """Compare the book with the venue once, recording the verdict durably.
 
     Paper has no venue to disagree with, so it is skipped rather than reported as
     synced; a broker without ``fetch_positions`` (spot) is skipped for the same reason.
+
+    The protection check runs *after* the comparison and on the same broker: a venue
+    fill has to reach the book before the remaining quantity is re-armed, otherwise the
+    stop would be sized and levelled against exposure that no longer exists.
     """
     logger = get_logger("aegis.position_reconciler")
     if settings.execution.broker == "paper":
@@ -188,6 +242,14 @@ def reconcile_positions_once(
                             payload=drift.as_payload(),
                         )
                     )
+        if check_protection:
+            _check_protection(
+                broker,
+                factory,
+                ledger,
+                alerter=alerter if alerter is not None else build_alerter(settings.alerting),
+                alert_gate=alert_gate,
+            )
         return drifts
     finally:
         if owns_broker:
@@ -202,14 +264,13 @@ def rearm_protections(
     ledger: PortfolioLedger,
     *,
     alerter: Alerter | None = None,
+    alert_gate: ProtectionAlertGate | None = None,
 ) -> tuple[ReArmResult, ...]:
     """Verify the venue still holds every open position's stop, and re-place it if not.
 
-    Runs once at startup because that is the moment the in-process monitor's view and
-    the venue's state can differ silently: the stop may have been cancelled by hand
-    while nothing was watching.
+    Kept as the standalone entry point (``--once`` runs, tests and operators); the
+    runner also calls the same check from every reconciliation cycle.
     """
-    logger = get_logger("aegis.protection_rearm")
     if settings.execution.broker == "paper":
         return ()
 
@@ -217,33 +278,17 @@ def rearm_protections(
         settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
     )
     try:
-        required = ("fetch_open_order_ids", "cancel_protection_orders", "submit_protection_order")
-        if not all(callable(getattr(broker, name, None)) for name in required):
-            logger.info(
-                "protection_rearm_skipped",
-                reason="broker cannot hold protection orders (spot does not need this)",
-            )
-            return ()
-        rearmer = ProtectionReArmer(
-            ledger=ledger,
-            venue=cast(VenueProtection, broker),
-            writer_factory=lambda: _ledger_writer(factory),
+        return _check_protection(
+            broker,
+            factory,
+            ledger,
             alerter=alerter if alerter is not None else build_alerter(settings.alerting),
+            alert_gate=alert_gate,
         )
-        results = rearmer.run()
     finally:
         close = getattr(broker, "close", None)
         if callable(close):
             close()
-
-    for result in results:
-        logger.info(
-            "protection_check",
-            symbol=result.symbol,
-            status=result.status,
-            stop_order_id=result.stop_order_id,
-        )
-    return results
 
 
 def acknowledge_drift(settings: Settings, factory: sessionmaker[Session]) -> bool:

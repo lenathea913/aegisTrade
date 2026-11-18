@@ -144,8 +144,10 @@ A non-flat row with `stop_loss IS NULL` is **unprotected**: the monitor has noth
 watch and nothing can be re-armed. Close it manually (`docs/runbooks/kill-switch.md`) or
 re-open it with a stop rather than leaving it running.
 
-At startup the runner verifies every recorded stop against the venue
-(`GET /fapi/v1/openOrders`), once, before the first entry:
+The runner verifies every recorded stop against the venue (`GET /fapi/v1/openOrders`)
+on **every reconciliation cycle** (`reconciler.position_interval_seconds`, default
+60 s), and once immediately at startup before the first entry — a stop that is
+cancelled or consumed mid-session is noticed within a cycle, not only after a restart:
 
 - **`protection_intact`** — the id is still working; nothing is touched.
 - **`protection_rearmed`** (WARNING alert) — the id is gone or was never recorded. Any
@@ -156,8 +158,32 @@ At startup the runner verifies every recorded stop against the venue
 - **`protection_check_failed`** / `unchecked` — the venue could not be asked. Nothing is
   cancelled or re-placed: an unknown state is not evidence the stop is gone.
 - **`position_without_stop_level`** (CRITICAL alert) — nothing to re-arm; a human must
-  decide.
+decide.
+
+### A stop that filled partially is a remainder, not a closed position
+
+`STOP_MARKET`/`TAKE_PROFIT_MARKET` orders are sent with `closePosition=true`, so they are
+one-shot: the order disappears when it executes, even when the execution only covered
+part of the quantity (a market order can be filled in several `userTrades`). The
+signature is `stop_order_id` recorded, the id no longer in `openOrders`, and the position
+still open — logged as `protection_stop_missing_with_open_position` and followed
+immediately by a re-arm for the remaining quantity (WARNING alert,
+`protection_rearmed`). The same path covers an operator cancelling the stop at the venue.
+
+Alert repeats are suppressed per symbol and outcome: an unprotected position pages once,
+not once a minute, while every cycle is still logged. A change of state always alerts.
+
+### The venue can close before the local monitor does
+
+Both the venue's stop and `apps/position_monitor` can close the same leg. Before an exit
+is sent, the monitor asks the venue (open orders + `positionRisk`) whether the recorded
+protection order is gone **and** the leg is smaller than the book believes. If both hold,
+the exit is withheld (`monitor_exit_skipped_venue_executed`) and a reconciliation pass
+books the venue's fill (`venue_fill_reconciled`) instead — no second order is sent, so no
+new position can be opened in the opposite direction. An unreachable venue answers
+nothing and the exit proceeds; the submission would fail anyway.
 
 `/positions` shows the result per row: **🔒 Locked** when a venue stop id is recorded,
-**🔓 Naked** when it is not. The badge reflects the *recorded* id; the startup check is
-what keeps it truthful.
+**🔓 Naked** when it is not. The badge reflects the *recorded* id; the per-cycle check is
+what keeps it truthful. `aegis_positions_naked` and `aegis_entries_halted` expose both
+states to Prometheus.

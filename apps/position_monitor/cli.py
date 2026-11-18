@@ -37,8 +37,10 @@ from aegis_db import (
 from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerStore, LedgerWriter, PortfolioLedger, PositionProtection
 from aegis_risk import RiskGate
+from order_reconciler.cli import reconcile_positions_once
 from position_monitor.monitor import MonitorAction, PositionMonitor
 from position_monitor.quotes import CandleQuoteSource, live_quote_source
+from position_monitor.venue import BrokerVenueCheck
 
 __all__ = ["action_payload", "build_monitor", "main", "restore_from_database"]
 
@@ -113,6 +115,17 @@ def build_monitor(
     broker = build_broker(
         settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
     )
+    venue_check = (
+        BrokerVenueCheck(broker)
+        if callable(getattr(broker, "fetch_open_order_ids", None))
+        and callable(getattr(broker, "fetch_positions", None))
+        else None
+    )
+
+    def _book_venue_fill(symbol: str) -> None:
+        """The venue closed first: reconcile the book instead of sending an exit."""
+        reconcile_positions_once(settings, factory, book, broker=broker)
+
     gateway = ExecutionGateway(broker, allow_live_orders=settings.execution.allow_live_orders)
     pipeline = TradingPipeline(
         gate=RiskGate.from_settings(settings),
@@ -127,6 +140,8 @@ def build_monitor(
         use_live_price=settings.position_monitor.use_live_price,
         live_quotes=live_quote_source(settings, factory),
         protect_take_profit=settings.position_monitor.protect_take_profit,
+        venue_check=venue_check,
+        on_venue_execution=_book_venue_fill,
     )
 
 

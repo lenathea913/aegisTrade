@@ -258,6 +258,21 @@ def create_app(
         ledger_cache[:] = [(moment, status)]
         return status
 
+    def _refresh_safety_metrics() -> None:
+        """Keep the safety gauges honest at scrape time.
+
+        Reading the ledger is cheap (it is in memory) and the reconciliation row is
+        cached for five seconds, so this costs at most one small query per scrape.
+        A failure leaves the previous value in place: a stale gauge is better than a
+        green one invented by an exception handler.
+        """
+        try:
+            positions = service.positions().positions
+            metrics.set_naked_positions(sum(1 for item in positions if not item.protected))
+        except SQLAlchemyError:
+            return
+        metrics.set_entries_halted(bool(_ledger_status().get("halted")))
+
     def _render(request: Request, name: str, context: dict[str, Any]) -> Response:
         """Render a template with the exchange and ledger badges always in scope."""
         return templates.TemplateResponse(
@@ -430,6 +445,9 @@ def create_app(
         """
         response = service.positions()
         metrics.set_equity(Decimal(service.risk_budget().equity))
+        metrics.set_naked_positions(
+            sum(1 for position in response.positions if not position.protected)
+        )
         if _wants_html(request):
             return _render(request, "positions.html", {"positions": response, "message": None})
         return JSONResponse(content=response.model_dump(mode="json"))
@@ -773,6 +791,9 @@ def create_app(
 
         @app.get("/metrics", include_in_schema=False)
         def prometheus_metrics() -> Response:
+            # Refreshed at scrape time: a dashboard that nobody has open must not leave
+            # the safety gauges frozen at their last value.
+            _refresh_safety_metrics()
             return Response(content=metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     return app

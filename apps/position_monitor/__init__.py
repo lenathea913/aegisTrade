@@ -12,11 +12,15 @@ from __future__ import annotations
 
 from position_monitor.monitor import ExitTrigger, MonitorAction, PositionMonitor
 from position_monitor.quotes import CandleQuoteSource, QuoteSource
+from position_monitor.venue import BrokerVenueCheck, VenueCheck, VenuePositionState
 
 __all__ = [
+    "BrokerVenueCheck",
     "CandleQuoteSource",
     "ExitTrigger",
     "MonitorAction",
     "PositionMonitor",
     "QuoteSource",
+    "VenueCheck",
+    "VenuePositionState",
 ]

@@ -22,8 +22,8 @@ signal scan cannot delay a stop-loss check.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -44,8 +44,9 @@ from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerWriter, PortfolioLedger
 from aegis_observability import get_logger
 from aegis_risk import RiskGate
-from position_monitor import MonitorAction, PositionMonitor
+from position_monitor import BrokerVenueCheck, MonitorAction, PositionMonitor
 from position_monitor.quotes import QuoteSource
+from position_monitor.venue import VenueCheck
 from signal_service import SignalRiskRejectedError, SignalService, SignalStateError
 from trading_runner.candles import LatestCandleSource
 
@@ -315,8 +316,8 @@ class TradingRunner:
         if not self._settings.runner.monitor_enabled:
             return ()
         self._accrue_funding()
-        with self._writer_factory() as writer:
-            monitor = self._monitor(writer)
+        with self._writer_factory() as writer, self._venue_check() as venue_check:
+            monitor = self._monitor(writer, venue_check=venue_check)
             actions = monitor.check()
         for action in actions:
             self._logger.info(
@@ -395,7 +396,9 @@ class TradingRunner:
             alerter=self._alerter,
         )
 
-    def _monitor(self, writer: LedgerWriter | None) -> PositionMonitor:
+    def _monitor(
+        self, writer: LedgerWriter | None, *, venue_check: VenueCheck | None = None
+    ) -> PositionMonitor:
         return PositionMonitor(
             ledger=self._ledger,
             pipeline=self._pipeline(writer),
@@ -404,4 +407,33 @@ class TradingRunner:
             use_live_price=self._settings.position_monitor.use_live_price,
             live_quotes=self._live_quotes,
             protect_take_profit=self._settings.position_monitor.protect_take_profit,
+            # Ask the venue before closing: the stop may have fired first.
+            venue_check=venue_check,
+            on_venue_execution=self._reconcile_venue_execution,
         )
+
+    @contextmanager
+    def _venue_check(self) -> Iterator[VenueCheck | None]:
+        """A broker-backed pre-exit check, or ``None`` when the venue cannot answer."""
+        if self._settings.execution.broker == "paper":
+            yield None
+            return
+        broker = build_broker(
+            self._settings.execution,
+            exchange=self._settings.exchange,
+            live_confirm=self._settings.live_confirm,
+        )
+        try:
+            supports = callable(getattr(broker, "fetch_open_order_ids", None)) and callable(
+                getattr(broker, "fetch_positions", None)
+            )
+            yield BrokerVenueCheck(broker) if supports else None
+        finally:
+            close = getattr(broker, "close", None)
+            if callable(close):
+                close()
+
+    def _reconcile_venue_execution(self, symbol: str) -> None:
+        """Book a fill the venue executed before the monitor could send its own exit."""
+        self._logger.warning("monitor_venue_execution_reconcile", symbol=symbol)
+        self.run_position_reconciliation()

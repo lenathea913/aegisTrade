@@ -18,7 +18,7 @@ from aegis_alerting import Alert, AlertLevel
 from aegis_core import Side, Trade
 from aegis_execution import ExchangeUnavailableError
 from aegis_ledger import AuditEvent, EventType, PortfolioLedger, PositionProtection
-from order_reconciler.protection import ProtectionReArmer
+from order_reconciler.protection import ProtectionAlertGate, ProtectionReArmer
 
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 STOP_ID = "111"
@@ -107,7 +107,10 @@ class FakeAlerter:
 
 
 def build(
-    ledger: PortfolioLedger, venue: FakeVenue
+    ledger: PortfolioLedger,
+    venue: FakeVenue,
+    *,
+    alert_gate: ProtectionAlertGate | None = None,
 ) -> tuple[ProtectionReArmer, FakeWriter, FakeAlerter]:
     writer, alerter = FakeWriter(), FakeAlerter()
 
@@ -121,6 +124,7 @@ def build(
         writer_factory=factory,
         alerter=alerter,
         clock=lambda: NOW,
+        alert_gate=alert_gate,
     )
     return rearmer, writer, alerter
 
@@ -191,6 +195,64 @@ def test_an_unreachable_venue_leaves_the_stop_untouched() -> None:
     assert [result.status for result in results] == ["unchecked"]
     assert venue.cancelled == [] and venue.placed == []
     assert writer.positions == []
+
+
+def test_a_partially_filled_stop_re_arms_only_the_remainder() -> None:
+    """``closePosition`` is one-shot: a partial execution leaves a naked remainder."""
+    ledger = ledger_with()
+    # The venue filled 0.06 of the 0.1 leg at the stop; the order is gone afterwards.
+    ledger.apply_trade(
+        Trade(
+            order_id="venue:9001",
+            symbol="BTC/USDT",
+            side=Side.SELL,
+            qty=Decimal("0.06"),
+            price=Decimal("29400"),
+            filled_at=NOW,
+            strategy_id="venue_protection",
+            leverage=3,
+        )
+    )
+    venue = FakeVenue(set())
+    rearmer, writer, alerter = build(ledger, venue)
+
+    results = rearmer.run()
+
+    assert [result.status for result in results] == ["rearmed"]
+    assert results[0].reason == "stop_gone_position_open"
+    # The old id survived the partial close, so it must be replaced, not trusted.
+    assert ledger.position("BTC/USDT").stop_order_id == "9001"
+    assert ledger.position("BTC/USDT").qty == Decimal("0.04")
+    assert venue.cancelled == ["BTC/USDT"]
+    assert venue.placed[0]["qty"] == Decimal("0.04")
+    assert venue.placed[0]["stop_loss"] == Decimal("29400")
+    assert writer.audits[0].payload["reason_code"] == "stop_gone_position_open"
+    assert alerter.alerts[0].level is AlertLevel.WARNING
+
+
+def test_the_same_alert_is_not_repeated_on_every_cycle() -> None:
+    """The check now runs every minute; a page per cycle would drown the operator."""
+    venue = FakeVenue(set())
+    gate = ProtectionAlertGate()
+    rearmer, _writer, alerter = build(ledger_with(stop_loss=None), venue, alert_gate=gate)
+
+    rearmer.run()
+    rearmer.run()
+
+    assert [alert.level for alert in alerter.alerts] == [AlertLevel.CRITICAL]
+
+
+def test_a_repeat_rearm_is_logged_but_alerted_once() -> None:
+    venue = FakeVenue(set())
+    gate = ProtectionAlertGate()
+    ledger = ledger_with()
+    rearmer, _writer, alerter = build(ledger, venue, alert_gate=gate)
+
+    rearmer.run()  # re-armed -> WARNING
+    rearmer.run()  # the new id is not open either -> same outcome, no second page
+
+    assert len(venue.placed) == 2
+    assert [alert.level for alert in alerter.alerts] == [AlertLevel.WARNING]
 
 
 def test_a_flat_book_needs_no_check() -> None:

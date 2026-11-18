@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
 from aegis_core import MarketContext, MarketQuote, OrderIntent, OrderType, RiskLimit, Side
-from aegis_execution import ExecutionGateway, PaperBroker, TradingPipeline
+from aegis_execution import (
+    ExchangeUnavailableError,
+    ExecutionGateway,
+    PaperBroker,
+    TradingPipeline,
+)
 from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
-from position_monitor import ExitTrigger, PositionMonitor
+from position_monitor import ExitTrigger, PositionMonitor, VenuePositionState
 
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 ENTRY_TIME = NOW - timedelta(hours=3)
@@ -211,6 +217,134 @@ def test_live_price_uses_the_ledger_mark_when_enabled() -> None:
     assert len(actions) == 1
     assert actions[0].trigger is ExitTrigger.STOP_LOSS
     assert actions[0].closed is True
+
+
+class FakeVenue:
+    """Answers the pre-exit question with a fixed venue state."""
+
+    def __init__(
+        self,
+        qty: str,
+        *,
+        protection_open: bool = False,
+        error: Exception | None = None,
+    ) -> None:
+        self.qty = Decimal(qty)
+        self.protection_open = protection_open
+        self.error = error
+        self.asked: list[str] = []
+
+    def inspect(
+        self, symbol: str, *, side: Side, protection_ids: Sequence[str] = ()
+    ) -> VenuePositionState:
+        self.asked.append(symbol)
+        if self.error is not None:
+            raise self.error
+        return VenuePositionState(venue_qty=self.qty, protection_open=self.protection_open)
+
+
+def test_an_exit_is_withheld_when_the_venue_already_closed() -> None:
+    """The stop fired first: booking its fill is the job, not sending a second order."""
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    booked: list[str] = []
+    monitor = _monitor(
+        pipeline,
+        ledger,
+        Quotes({"BTC/USDT": "28999"}),
+        venue_check=FakeVenue("0"),
+        on_venue_execution=booked.append,
+    )
+
+    assert monitor.check() == ()
+    # Nothing was sent, and the venue's fill was handed to the reconciler.
+    assert ledger.position("BTC/USDT").qty == Decimal("0.1")
+    assert booked == ["BTC/USDT"]
+
+
+def test_a_reduced_venue_position_also_withholds_the_exit() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    booked: list[str] = []
+    monitor = _monitor(
+        pipeline,
+        ledger,
+        Quotes({"BTC/USDT": "28999"}),
+        venue_check=FakeVenue("0.04"),
+        on_venue_execution=booked.append,
+    )
+
+    assert monitor.check() == ()
+    assert booked == ["BTC/USDT"]
+
+
+def test_the_exit_is_sent_while_the_venue_still_holds_the_leg() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    monitor = _monitor(
+        pipeline,
+        ledger,
+        Quotes({"BTC/USDT": "28999"}),
+        venue_check=FakeVenue("0.1"),
+    )
+
+    actions = monitor.check()
+
+    assert len(actions) == 1
+    assert actions[0].closed is True
+
+
+def test_the_exit_is_sent_while_the_venue_stop_is_still_working() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    monitor = _monitor(
+        pipeline,
+        ledger,
+        Quotes({"BTC/USDT": "28999"}),
+        venue_check=FakeVenue("0.1", protection_open=True),
+    )
+
+    actions = monitor.check()
+
+    assert len(actions) == 1
+    assert actions[0].closed is True
+
+
+def test_an_unreachable_venue_does_not_block_the_exit() -> None:
+    """Unknown is not "already closed": guessing would leave the position unprotected."""
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    booked: list[str] = []
+    monitor = _monitor(
+        pipeline,
+        ledger,
+        Quotes({"BTC/USDT": "28999"}),
+        venue_check=FakeVenue("0", error=ExchangeUnavailableError("timeout")),
+        on_venue_execution=booked.append,
+    )
+
+    actions = monitor.check()
+
+    assert len(actions) == 1
+    assert actions[0].closed is True
+    assert booked == []
+
+
+def test_no_venue_check_when_no_level_is_touched() -> None:
+    """The venue is only asked when an exit would actually be sent."""
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    pipeline = _pipeline(ledger)
+    _open_long(pipeline, ledger)
+    venue = FakeVenue("0")
+    monitor = _monitor(pipeline, ledger, Quotes({"BTC/USDT": "30500"}), venue_check=venue)
+
+    assert monitor.check() == ()
+    assert venue.asked == []
 
 
 def test_live_price_is_ignored_without_a_mark() -> None:

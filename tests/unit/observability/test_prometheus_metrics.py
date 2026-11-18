@@ -55,6 +55,20 @@ def test_gauges_hold_current_values() -> None:
     assert metrics.value("aegis_collector_lag_seconds") == 42.5
 
 
+def test_safety_gauges_hold_current_values() -> None:
+    metrics = Metrics()
+
+    metrics.set_naked_positions(2)
+    metrics.set_entries_halted(True)
+
+    assert metrics.value("aegis_positions_naked") == 2
+    assert metrics.value("aegis_entries_halted") == 1
+
+    metrics.set_entries_halted(False)
+
+    assert metrics.value("aegis_entries_halted") == 0
+
+
 def test_instances_do_not_share_registries() -> None:
     first = Metrics()
     second = Metrics()

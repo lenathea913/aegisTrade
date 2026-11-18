@@ -73,6 +73,16 @@ class Metrics:
             ["method", "path", "status"],
             registry=self.registry,
         )
+        self._naked = Gauge(
+            "aegis_positions_naked",
+            "Open positions with no recorded venue stop order id.",
+            registry=self.registry,
+        )
+        self._halted = Gauge(
+            "aegis_entries_halted",
+            "1 when ledger drift (or an unreadable state) has halted new entries.",
+            registry=self.registry,
+        )
 
     # --------------------------------------------------------------- writes
 
@@ -97,6 +107,14 @@ class Metrics:
 
     def record_request(self, method: str, path: str, status: int) -> None:
         self._requests.labels(method=method, path=path, status=str(status)).inc()
+
+    def set_naked_positions(self, count: int) -> None:
+        """How many open positions have no venue stop id recorded."""
+        self._naked.set(count)
+
+    def set_entries_halted(self, halted: bool) -> None:
+        """Whether new entries are blocked until an operator acknowledges a drift."""
+        self._halted.set(1 if halted else 0)
 
     # ----------------------------------------------------------------- reads
 

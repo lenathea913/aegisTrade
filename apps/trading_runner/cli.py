@@ -33,7 +33,8 @@ from aegis_db import create_engine_from_settings, create_session_factory, sessio
 from aegis_ledger import LedgerError, LedgerStore, LedgerWriter, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
 from aegis_risk import RiskGate
-from order_reconciler.cli import rearm_protections, reconcile_once, reconcile_positions_once
+from order_reconciler.cli import reconcile_once, reconcile_positions_once
+from order_reconciler.protection import ProtectionAlertGate
 from order_reconciler.state import SqlReconciliationState
 from position_monitor.quotes import CandleQuoteSource, live_quote_source
 from signal_service import SignalService, SqlCandleRepository, SqlSignalStore
@@ -100,12 +101,11 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
     restore_ledger(ledger, factory)
     reconcile_at_startup(settings, factory, ledger)
     alerter = build_alerter(settings.alerting)
-    try:
-        # A restored position row says a stop *should* exist. Only the venue knows
-        # whether it still does, so it is checked (and re-placed) before any entry.
-        rearm_protections(settings, factory, ledger, alerter=alerter)
-    except Exception as exc:  # startup must not die on a venue hiccup
-        get_logger("aegis.runner").error("runner_startup_rearm_failed", error=str(exc))
+    # A restored position row says a stop *should* exist. Only the venue knows whether
+    # it still does, so every reconciliation cycle verifies (and re-places) it — the
+    # daemon runs one immediately, before the first entry. The gate remembers what was
+    # already alerted, so a naked position pages once instead of once a minute.
+    alert_gate = ProtectionAlertGate()
     state = SqlReconciliationState(factory)
 
     def entries_blocked() -> str | None:
@@ -136,7 +136,9 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         live_quotes=live_quote_source(settings, factory),
         alerter=alerter,
         entries_blocked=entries_blocked,
-        position_reconciliation=lambda: reconcile_positions_once(settings, factory, ledger),
+        position_reconciliation=lambda: reconcile_positions_once(
+            settings, factory, ledger, alert_gate=alert_gate
+        ),
     )
 
 

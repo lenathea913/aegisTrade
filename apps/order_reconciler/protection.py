@@ -16,6 +16,12 @@ This module closes that gap. On startup each open position is checked against th
 
 The stop matters more than the target, so a missing target alone is logged, not
 re-placed: submitting a fresh stop to recover a target would be a worse trade.
+
+The check is not a startup ritual: it runs on every reconciliation cycle as well, so a
+stop that disappears mid-session is noticed within one cycle. A stop that is gone while
+the position is still open is the signature of a **partial fill** (``closePosition``
+orders are one-shot) or of an operator cancelling it at the venue; both leave the
+remainder naked, which is exactly what this module re-arms.
 """
 
 from __future__ import annotations
@@ -39,7 +45,28 @@ from aegis_ledger import (
 )
 from aegis_observability import get_logger
 
-__all__ = ["ProtectionReArmer", "ReArmResult", "VenueProtection"]
+__all__ = ["ProtectionAlertGate", "ProtectionReArmer", "ReArmResult", "VenueProtection"]
+
+
+class ProtectionAlertGate:
+    """Suppress a repeat of the same alert for the same symbol.
+
+    The check runs every reconciliation cycle, so an unprotected position would page the
+    operator once a minute forever. Only a *change* is worth a new alert; each cycle is
+    still logged at its own level, so nothing is hidden from the log tail.
+    """
+
+    def __init__(self) -> None:
+        self._last: dict[str, tuple[str, str]] = {}
+
+    def allows(self, *, symbol: str, status: str, reason: str) -> bool:
+        """True when this outcome differs from the last one reported for ``symbol``."""
+        key = (status, reason)
+        if self._last.get(symbol) == key:
+            return False
+        self._last[symbol] = key
+        return True
+
 
 #: A writer factory returns a context manager around the writer for one write, so the
 #: position row and its audit event commit together. ``None`` skips persistence.
@@ -77,6 +104,8 @@ class ReArmResult:
     status: str
     stop_order_id: str | None = None
     detail: str = ""
+    #: Short code for the outcome (``stop_gone_position_open``, ``rearm_failed``, ...).
+    reason: str = ""
 
     @property
     def healthy(self) -> bool:
@@ -94,12 +123,14 @@ class ProtectionReArmer:
         writer_factory: WriterFactory,
         alerter: Alerter | None = None,
         clock: Callable[[], datetime] = utc_now,
+        alert_gate: ProtectionAlertGate | None = None,
     ) -> None:
         self._ledger = ledger
         self._venue = venue
         self._writer_factory = writer_factory
         self._alerter = alerter
         self._clock = clock
+        self._alert_gate = alert_gate
         self._logger = get_logger("aegis.protection_rearm")
 
     def run(self) -> tuple[ReArmResult, ...]:
@@ -119,6 +150,9 @@ class ProtectionReArmer:
             self._logger.critical("position_without_stop_level", symbol=position.symbol)
             self._notify(
                 AlertLevel.CRITICAL,
+                symbol=position.symbol,
+                status="no_stop_level",
+                reason="missing_stop_level",
                 title="Open position has no stop level",
                 message=(
                     f"{position.symbol} is open without a stop level; nothing could be "
@@ -131,7 +165,9 @@ class ProtectionReArmer:
                     "reason": "missing_stop_level",
                 },
             )
-            return ReArmResult(symbol=position.symbol, status="no_stop_level")
+            return ReArmResult(
+                symbol=position.symbol, status="no_stop_level", reason="missing_stop_level"
+            )
 
         try:
             open_ids = self._venue.fetch_open_order_ids(position.symbol)
@@ -143,6 +179,7 @@ class ProtectionReArmer:
                 status="unchecked",
                 stop_order_id=position.stop_order_id,
                 detail=str(exc),
+                reason="venue_unreachable",
             )
 
         if position.stop_order_id is not None and position.stop_order_id in open_ids:
@@ -164,19 +201,40 @@ class ProtectionReArmer:
                 symbol=position.symbol,
                 status="intact",
                 stop_order_id=position.stop_order_id,
+                reason="stop_working",
             )
 
-        reason = (
-            "no stop order was ever recorded"
-            if position.stop_order_id is None
-            else "the recorded stop is no longer open on the venue"
+        if position.stop_order_id is None:
+            return self._rearm(
+                position,
+                reason="no stop order was ever recorded",
+                code="no_stop_order_recorded",
+            )
+        # The position is open and its recorded stop is not: the venue filled it
+        # partially (a ``closePosition`` order is one-shot) or somebody cancelled it.
+        # Either way the remainder is naked until this re-arms.
+        self._logger.warning(
+            "protection_stop_missing_with_open_position",
+            symbol=position.symbol,
+            stop_order_id=position.stop_order_id,
+            qty=str(position.qty),
+            detail="partial fill or a cancelled stop; re-arming the remaining quantity",
         )
-        return self._rearm(position, reason=reason)
+        return self._rearm(
+            position,
+            reason="the recorded stop is gone while the position is still open",
+            code="stop_gone_position_open",
+        )
 
-    def _rearm(self, position: Position, *, reason: str) -> ReArmResult:
+    def _rearm(self, position: Position, *, reason: str, code: str) -> ReArmResult:
         side = position.side
         if side is None or position.stop_loss is None:  # pragma: no cover - caller checks
-            return ReArmResult(symbol=position.symbol, status="unchecked", detail=reason)
+            return ReArmResult(
+                symbol=position.symbol,
+                status="unchecked",
+                detail=reason,
+                reason="venue_unreachable",
+            )
 
         # Cancel first: the leg must never hold two stops, and a stale target that
         # outlived its level would close the position at a price nobody chose.
@@ -190,6 +248,9 @@ class ProtectionReArmer:
             )
             self._notify(
                 AlertLevel.CRITICAL,
+                symbol=position.symbol,
+                status="failed",
+                reason="cancel_before_rearm_failed",
                 title="Cannot re-arm stop: venue group not cleaned up",
                 message=(
                     f"{position.symbol} has no working stop and the stale protection "
@@ -202,7 +263,12 @@ class ProtectionReArmer:
                     "detail": str(exc)[:400],
                 },
             )
-            return ReArmResult(symbol=position.symbol, status="failed", detail=str(exc))
+            return ReArmResult(
+                symbol=position.symbol,
+                status="failed",
+                detail=str(exc),
+                reason="cancel_before_rearm_failed",
+            )
 
         try:
             placed = self._venue.submit_protection_order(
@@ -217,6 +283,9 @@ class ProtectionReArmer:
             self._logger.error("protection_rearm_failed", symbol=position.symbol, error=str(exc))
             self._notify(
                 AlertLevel.CRITICAL,
+                symbol=position.symbol,
+                status="failed",
+                reason="rearm_failed",
                 title="Stop re-arm failed: position is unprotected",
                 message=(
                     f"{position.symbol} is open and the venue refused its stop; only the "
@@ -229,7 +298,9 @@ class ProtectionReArmer:
                     "detail": str(exc)[:400],
                 },
             )
-            return ReArmResult(symbol=position.symbol, status="failed", detail=str(exc))
+            return ReArmResult(
+                symbol=position.symbol, status="failed", detail=str(exc), reason="rearm_failed"
+            )
 
         stop_order_id = getattr(placed, "stop_order_id", None)
         tp_order_id = getattr(placed, "take_order_id", None)
@@ -252,6 +323,7 @@ class ProtectionReArmer:
             payload={
                 "symbol": position.symbol,
                 "reason": reason,
+                "reason_code": code,
                 "cancelled_orders": cancelled,
                 "previous_stop_order_id": position.stop_order_id,
                 "stop_order_id": stop_order_id,
@@ -274,15 +346,20 @@ class ProtectionReArmer:
         )
         self._notify(
             AlertLevel.WARNING,
+            symbol=position.symbol,
+            status="rearmed",
+            reason=code,
             title="Stop re-armed on the venue",
+            # The alert body is capped at 128 characters; the reason goes in context.
             message=(
-                f"{position.symbol} had no working stop ({reason}); it was re-placed and "
-                "its order id saved."
+                f"{position.symbol} had no working stop; it was re-placed and the new "
+                "order id saved."
             ),
             context={
                 "symbol": position.symbol,
                 "status": "REARMED",
                 "reason": reason,
+                "reason_code": code,
                 "cancelled_orders": str(cancelled),
                 "stop_order_id": stop_order_id,
                 "tp_order_id": tp_order_id,
@@ -293,12 +370,28 @@ class ProtectionReArmer:
             status="rearmed",
             stop_order_id=stop_order_id,
             detail=reason,
+            reason=code,
         )
 
     def _notify(
-        self, level: AlertLevel, *, title: str, message: str, context: dict[str, Any]
+        self,
+        level: AlertLevel,
+        *,
+        symbol: str,
+        status: str,
+        reason: str,
+        title: str,
+        message: str,
+        context: dict[str, Any],
     ) -> None:
         if self._alerter is None:
+            return
+        if self._alert_gate is not None and not self._alert_gate.allows(
+            symbol=symbol, status=status, reason=reason
+        ):
+            self._logger.info(
+                "protection_alert_suppressed", symbol=symbol, status=status, reason=reason
+            )
             return
         self._alerter.send(
             Alert(

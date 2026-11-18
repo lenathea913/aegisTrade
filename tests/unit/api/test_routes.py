@@ -107,6 +107,17 @@ def test_positions_endpoint_serialises_money_as_strings() -> None:
     assert Decimal(body["positions"][0]["unrealized_pnl"]) == Decimal("20")
 
 
+def test_positions_route_reports_naked_positions() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    ledger.apply_trade(trade())
+    client, metrics = build_client(ledger=ledger)
+
+    client.get("/positions")
+
+    # A position with no recorded venue stop id is exposure the venue is not covering.
+    assert metrics.value("aegis_positions_naked") == 1
+
+
 def test_risk_budget_endpoint() -> None:
     client, metrics = build_client()
 

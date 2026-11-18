@@ -153,6 +153,11 @@ class ApiService:
                     "" if position.liquidation_price is None else str(position.liquidation_price)
                 ),
                 roe_pct=str(position.roe_pct),
+                # The id is the only durable evidence we hold that the venue
+                # actually carries this position's stop; the startup re-arm keeps
+                # it honest.
+                stop_order_id=position.stop_order_id,
+                protected=position.stop_order_id is not None,
             )
             for position in state.open_positions
         ]

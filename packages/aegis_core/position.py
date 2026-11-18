@@ -20,7 +20,13 @@ from aegis_core.clock import utc_now
 from aegis_core.enums import Side
 from aegis_core.errors import DomainError
 from aegis_core.leverage import MAX_LEVERAGE, liquidation_price, margin_for, roe_pct
-from aegis_core.types import FiniteDecimal, NonNegativeDecimal, SymbolStr, UtcDatetime
+from aegis_core.types import (
+    FiniteDecimal,
+    NonEmptyStr,
+    NonNegativeDecimal,
+    SymbolStr,
+    UtcDatetime,
+)
 
 __all__ = ["Position"]
 
@@ -48,6 +54,10 @@ class Position(StrictModel):
     #: position has none: there is no exposure for a stop to protect.
     stop_loss: FiniteDecimal | None = None
     take_profit: FiniteDecimal | None = None
+    #: Venue-side order ids of those exits. Keeping them beside the levels is what lets
+    #: a restart *verify* the stop instead of assuming it is still there.
+    stop_order_id: NonEmptyStr | None = None
+    tp_order_id: NonEmptyStr | None = None
     opened_at: UtcDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -64,6 +74,12 @@ class Position(StrictModel):
             raise ValueError("stop_loss must be greater than 0")
         if self.take_profit is not None and self.take_profit <= 0:
             raise ValueError("take_profit must be greater than 0")
+        if self.qty == 0 and (self.stop_order_id is not None or self.tp_order_id is not None):
+            raise ValueError("a flat position cannot reference venue protection orders")
+        if self.stop_order_id is not None and self.stop_loss is None:
+            raise ValueError("stop_order_id requires a stop_loss level")
+        if self.tp_order_id is not None and self.take_profit is None:
+            raise ValueError("tp_order_id requires a take_profit level")
         return self
 
     @classmethod
@@ -165,6 +181,8 @@ class Position(StrictModel):
                     "leverage": 1,
                     "stop_loss": None,
                     "take_profit": None,
+                    "stop_order_id": None,
+                    "tp_order_id": None,
                 }
             )
         if (new_qty > 0) == (self.qty > 0):
@@ -183,6 +201,8 @@ class Position(StrictModel):
                 "leverage": self.leverage if leverage is None else leverage,
                 "stop_loss": None,
                 "take_profit": None,
+                "stop_order_id": None,
+                "tp_order_id": None,
             }
         )
 

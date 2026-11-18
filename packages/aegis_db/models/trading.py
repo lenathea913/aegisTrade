@@ -113,6 +113,13 @@ class PositionRecord(Base):
             "AND (take_profit IS NULL OR take_profit > 0))",
             name="ck_positions_protection_matches_exposure",
         ),
+        # A venue order id is only meaningful while the exposure and its level exist.
+        CheckConstraint(
+            "(qty = 0 AND stop_order_id IS NULL AND tp_order_id IS NULL) OR "
+            "(qty <> 0 AND (stop_order_id IS NULL OR stop_loss IS NOT NULL) "
+            "AND (tp_order_id IS NULL OR take_profit IS NOT NULL))",
+            name="ck_positions_protection_orders_match_exposure",
+        ),
         {"schema": "trading"},
     )
 
@@ -134,6 +141,10 @@ class PositionRecord(Base):
     #: position monitor instead of leaving the position unprotected.
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
     take_profit: Mapped[Decimal | None] = mapped_column(Numeric(28, 12), nullable=True)
+    #: Venue-side order ids of those exits. Stored so a restart can ask the exchange
+    #: whether the stop is still working, and re-arm it when it is not.
+    stop_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tp_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

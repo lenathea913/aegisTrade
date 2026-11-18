@@ -13,7 +13,8 @@ import argparse
 import json
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, cast
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,7 +27,9 @@ from aegis_db import create_engine_from_settings, create_session_factory, sessio
 from aegis_execution import ExchangeOrderState, build_broker
 from aegis_ledger import AuditEvent, EventType, LedgerError, LedgerStore, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
-from order_reconciler.positions import PositionDrift, PositionReconciler, VenueLeg
+from order_reconciler.fills import SqlVenueFillRecorder
+from order_reconciler.positions import PositionDrift, PositionReconciler, VenueFill, VenueLeg
+from order_reconciler.protection import ProtectionReArmer, ReArmResult, VenueProtection
 from order_reconciler.reconciler import OrderReconciler, ReconciliationResult
 from order_reconciler.repository import SqlOrderBook
 from order_reconciler.state import SqlReconciliationState
@@ -35,6 +38,7 @@ __all__ = [
     "acknowledge_drift",
     "build_reconciler",
     "main",
+    "rearm_protections",
     "reconcile_once",
     "reconcile_positions_once",
     "result_payload",
@@ -52,13 +56,27 @@ class _BrokerFeed:
 
 
 class _PositionFeed:
-    """Adapts a futures broker to ``VenuePositionFeed``."""
+    """Adapts a futures broker to ``VenuePositionFeed`` and ``VenueFillFeed``."""
 
     def __init__(self, broker: Any) -> None:
         self._broker = broker
 
     def fetch_positions(self) -> tuple[VenueLeg, ...]:
         return cast(tuple[VenueLeg, ...], self._broker.fetch_positions())
+
+    def fetch_protection_fills(self, symbol: str, *, since: Any = None) -> tuple[VenueFill, ...]:
+        """Empty for a broker that cannot report fills: the gap stays a drift."""
+        method = getattr(self._broker, "fetch_protection_fills", None)
+        if not callable(method):
+            return ()
+        return cast(tuple[VenueFill, ...], tuple(method(symbol, since=since)))
+
+
+@contextmanager
+def _ledger_writer(factory: sessionmaker[Session]) -> Iterator[LedgerStore]:
+    """One transaction for a position row plus its audit event."""
+    with session_scope(factory) as session:
+        yield LedgerStore(session)
 
 
 def build_reconciler(
@@ -146,11 +164,15 @@ def reconcile_positions_once(
                 reason="broker exposes no positions (spot does not need this)",
             )
             return ()
+        feed = _PositionFeed(broker)
         reconciler = PositionReconciler(
             ledger=ledger,
-            venue=_PositionFeed(broker),
+            venue=feed,
             state=SqlReconciliationState(factory),
             alerter=alerter if alerter is not None else build_alerter(settings.alerting),
+            # A stop that fired on the venue is booked, not reported as drift.
+            fills=feed,
+            recorder=SqlVenueFillRecorder(factory),
         )
         drifts = reconciler.run()
         if drifts:
@@ -172,6 +194,56 @@ def reconcile_positions_once(
             close = getattr(broker, "close", None)
             if callable(close):
                 close()
+
+
+def rearm_protections(
+    settings: Settings,
+    factory: sessionmaker[Session],
+    ledger: PortfolioLedger,
+    *,
+    alerter: Alerter | None = None,
+) -> tuple[ReArmResult, ...]:
+    """Verify the venue still holds every open position's stop, and re-place it if not.
+
+    Runs once at startup because that is the moment the in-process monitor's view and
+    the venue's state can differ silently: the stop may have been cancelled by hand
+    while nothing was watching.
+    """
+    logger = get_logger("aegis.protection_rearm")
+    if settings.execution.broker == "paper":
+        return ()
+
+    broker = build_broker(
+        settings.execution, exchange=settings.exchange, live_confirm=settings.live_confirm
+    )
+    try:
+        required = ("fetch_open_order_ids", "cancel_protection_orders", "submit_protection_order")
+        if not all(callable(getattr(broker, name, None)) for name in required):
+            logger.info(
+                "protection_rearm_skipped",
+                reason="broker cannot hold protection orders (spot does not need this)",
+            )
+            return ()
+        rearmer = ProtectionReArmer(
+            ledger=ledger,
+            venue=cast(VenueProtection, broker),
+            writer_factory=lambda: _ledger_writer(factory),
+            alerter=alerter if alerter is not None else build_alerter(settings.alerting),
+        )
+        results = rearmer.run()
+    finally:
+        close = getattr(broker, "close", None)
+        if callable(close):
+            close()
+
+    for result in results:
+        logger.info(
+            "protection_check",
+            symbol=result.symbol,
+            status=result.status,
+            stop_order_id=result.stop_order_id,
+        )
+    return results
 
 
 def acknowledge_drift(settings: Settings, factory: sessionmaker[Session]) -> bool:

@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -54,6 +54,7 @@ __all__ = [
     "DEFAULT_FUTURES_TESTNET_BASE_URL",
     "BinanceFuturesTestnetBroker",
     "FuturesPosition",
+    "ProtectionFill",
     "ProtectionOrders",
     "ensure_futures_testnet_base_url",
 ]
@@ -105,6 +106,22 @@ class FuturesPosition:
     leverage: int
     liquidation_price: Decimal | None
     isolated_margin: Decimal | None
+
+
+@dataclass(frozen=True)
+class ProtectionFill:
+    """One execution of a venue-side exit order (a stop or target that fired)."""
+
+    order_id: str
+    symbol: str
+    side: Side
+    qty: Decimal
+    price: Decimal
+    filled_at: datetime
+    order_type: str
+    position_side: PositionSide | None = None
+    fee: Decimal = Decimal("0")
+    realized_pnl: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -373,6 +390,86 @@ class BinanceFuturesTestnetBroker:
             cancelled += 1
         return cancelled
 
+    def fetch_open_order_ids(self, symbol: str) -> set[str]:
+        """Ids of the orders currently working for ``symbol`` on the venue.
+
+        Used to answer one question after a restart: is the recorded stop still there?
+        Only ids are returned — the caller already knows what it is looking for.
+        """
+        payload = self._request("GET", "/v1/openOrders", {"symbol": to_exchange_symbol(symbol)})
+        if not isinstance(payload, list):
+            raise ExchangeError("exchange returned an unexpected open-orders payload")
+        return {
+            str(item.get("orderId"))
+            for item in payload
+            if isinstance(item, dict) and item.get("orderId") is not None
+        }
+
+    def fetch_protection_fills(
+        self, symbol: str, *, since: datetime | None = None
+    ) -> tuple[ProtectionFill, ...]:
+        """Executions of ``STOP_MARKET``/``TAKE_PROFIT_MARKET`` orders for ``symbol``.
+
+        This is how a position that vanished from the venue but not from the book is
+        explained: ``userTrades`` carries the executions and ``allOrders`` says which
+        of them belong to a protective exit, so an ordinary reduce-by-hand at market
+        is never mistaken for our stop.
+        """
+        venue_symbol = to_exchange_symbol(symbol)
+        window: dict[str, str] = {"symbol": venue_symbol, "limit": "1000"}
+        if since is not None:
+            window["startTime"] = str(int(since.timestamp() * 1000))
+
+        orders = self._request("GET", "/v1/allOrders", window)
+        if not isinstance(orders, list):
+            raise ExchangeError("exchange returned an unexpected all-orders payload")
+        protection = {
+            str(item.get("orderId")): item
+            for item in orders
+            if isinstance(item, dict)
+            and str(item.get("type", "")).upper() in _PROTECTION_TYPES
+            and item.get("orderId") is not None
+        }
+        if not protection:
+            return ()
+
+        trades = self._request("GET", "/v1/userTrades", window)
+        if not isinstance(trades, list):
+            raise ExchangeError("exchange returned an unexpected user-trades payload")
+
+        fills: list[ProtectionFill] = []
+        for item in trades:
+            if not isinstance(item, dict):
+                continue
+            order_id = str(item.get("orderId"))
+            order = protection.get(order_id)
+            if order is None:
+                continue
+            side = _side(item.get("side"))
+            qty = _decimal(item.get("qty"))
+            price = _decimal(item.get("price"))
+            if side is None or qty <= 0 or price <= 0:
+                continue
+            raw_side = str(item.get("positionSide", "")).upper()
+            fills.append(
+                ProtectionFill(
+                    order_id=order_id,
+                    symbol=from_exchange_symbol(str(item.get("symbol", venue_symbol))),
+                    position_side=PositionSide(raw_side) if raw_side in {"LONG", "SHORT"} else None,
+                    side=side,
+                    qty=qty,
+                    price=price,
+                    fee=abs(_decimal(item.get("commission"))),
+                    realized_pnl=_decimal(item.get("realizedPnl")),
+                    filled_at=datetime.fromtimestamp(
+                        int(_decimal(item.get("time"))) / 1000, tz=UTC
+                    ),
+                    order_type=str(order.get("type", "")).upper(),
+                )
+            )
+        fills.sort(key=lambda fill: fill.filled_at)
+        return tuple(fills)
+
     def cancel(self, exchange_order_id: str, *, symbol: str) -> ExchangeOrderState:
         payload = _as_object(
             self._request(
@@ -471,6 +568,11 @@ def _decimal(raw: Any) -> Decimal:
         return Decimal(str(raw))
     except (ArithmeticError, ValueError):
         return Decimal("0")
+
+
+def _side(raw: Any) -> Side | None:
+    value = str(raw or "").upper()
+    return Side(value) if value in {"BUY", "SELL"} else None
 
 
 def _decimal_or_none(raw: Any) -> Decimal | None:

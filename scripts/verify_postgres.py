@@ -137,6 +137,19 @@ def _schema_checks(dsn: str) -> None:
         )
         check("positions CHECK rejects a flat position with a stop", error is not None, str(error))
 
+        # A venue order id is only meaningful beside the level it protects: an exit
+        # order nobody can place a price on cannot be audited or re-armed.
+        error = _raises(
+            cursor,
+            "insert into trading.positions (symbol, qty, avg_entry, stop_order_id) "
+            "values ('BTC/USDT', 1, 30000, '9001')",
+        )
+        check(
+            "positions CHECK rejects a stop order id without a level",
+            error is not None,
+            str(error),
+        )
+
         cursor.execute(
             "insert into trading.reconciliation_state (id, status, entries_halted) "
             "values (1, 'drift', true) "

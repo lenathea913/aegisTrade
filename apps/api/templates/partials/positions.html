@@ -23,6 +23,7 @@
         <th class="px-4 py-2">Leverage</th>
         <th class="px-4 py-2">Margin</th>
         <th class="px-4 py-2">Liq. Price</th>
+        <th class="px-4 py-2">Protection</th>
         <th class="px-4 py-2">Unrealized (ROE%)</th>
         <th class="px-4 py-2 text-right">Action</th>
       </tr>
@@ -52,6 +53,23 @@
           {% if position.liquidation_price %}
             {{ position.liquidation_price | price(position.symbol) }}
           {% else %}—{% endif %}
+        </td>
+        <td class="px-4 py-2">
+          {% if position.protected %}
+            <span
+              class="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300"
+              title="Venue stop order {{ position.stop_order_id }}"
+            >
+              🔒 Locked
+            </span>
+          {% else %}
+            <span
+              class="rounded bg-rose-500/10 px-2 py-0.5 text-xs text-rose-300"
+              title="No venue stop order is recorded for this position"
+            >
+              🔓 Naked
+            </span>
+          {% endif %}
         </td>
         {% set roe = position.roe_pct %}
         <td class="px-4 py-2 font-mono">

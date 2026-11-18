@@ -39,7 +39,13 @@ def _trade_row(*, trade_id: str, side: str, qty: str, price: str, at: datetime =
 
 
 def _position_row(
-    *, qty: str, avg_entry: str, stop_loss: str | None, take_profit: str | None = None
+    *,
+    qty: str,
+    avg_entry: str,
+    stop_loss: str | None,
+    take_profit: str | None = None,
+    stop_order_id: str | None = None,
+    tp_order_id: str | None = None,
 ) -> Any:
     return SimpleNamespace(
         symbol="BTC/USDT",
@@ -51,6 +57,8 @@ def _position_row(
         leverage=1,
         stop_loss=None if stop_loss is None else Decimal(stop_loss),
         take_profit=None if take_profit is None else Decimal(take_profit),
+        stop_order_id=stop_order_id,
+        tp_order_id=tp_order_id,
     )
 
 
@@ -249,3 +257,58 @@ def test_the_row_carries_the_levels_for_the_database() -> None:
 
     assert row["stop_loss"] == Decimal("29400")
     assert row["take_profit"] is None
+
+
+def test_the_venue_order_ids_survive_a_restart() -> None:
+    session = FakeSession(
+        trades=[_trade_row(trade_id="t1", side="BUY", qty="0.1", price="30000")],
+        positions=[
+            _position_row(
+                qty="0.1",
+                avg_entry="30000",
+                stop_loss="29400",
+                take_profit="31200",
+                stop_order_id="9001",
+                tp_order_id="9002",
+            )
+        ],
+    )
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+
+    ledger.reconstruct_from_db(session, now=NOW)
+
+    protection = ledger.protection("BTC/USDT")
+    assert protection is not None
+    assert protection.stop_order_id == "9001"
+    assert protection.tp_order_id == "9002"
+    # The ids travel on the position, which is the row the re-armer checks.
+    assert ledger.position("BTC/USDT").stop_order_id == "9001"
+
+
+def test_the_row_carries_the_venue_order_ids() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_1",
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            qty=Decimal("0.1"),
+            price=Decimal("30000"),
+            filled_at=NOW,
+            strategy_id="simple_ema_cross",
+        )
+    )
+    position = ledger.set_protection(
+        PositionProtection(
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            qty=Decimal("0.1"),
+            stop_loss=Decimal("29400"),
+            stop_order_id="9001",
+        )
+    )
+
+    row = position_row(position)
+
+    assert row["stop_order_id"] == "9001"
+    assert row["tp_order_id"] is None

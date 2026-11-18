@@ -22,7 +22,6 @@ from aegis_core import (
     MarketContext,
     Order,
     OrderIntent,
-    Position,
     PositionSide,
     RiskDecision,
     Trade,
@@ -303,7 +302,10 @@ class TradingPipeline:
         )
 
         if protected:
-            events.extend(self._place_venue_protection(order, approved, update.position))
+            # The venue order ids have to be persisted with the position: without them a
+            # restart cannot tell a working stop from one cancelled by hand.
+            protection_events, update = self._place_venue_protection(order, approved, update)
+            events.extend(protection_events)
 
         self._persist_order(order, approved)
         if self._writer is not None:
@@ -338,19 +340,20 @@ class TradingPipeline:
     # ------------------------------------------------------------- helpers
 
     def _place_venue_protection(
-        self, order: Order, approved: ApprovedOrder, position: Position
-    ) -> list[AuditEvent]:
+        self, order: Order, approved: ApprovedOrder, update: LedgerUpdate
+    ) -> tuple[list[AuditEvent], LedgerUpdate]:
         """Attach the stop and target on the venue so they outlive this process.
 
         A failure here does not undo the fill — the position exists either way — but it
         is a CRITICAL alert and an audit row: a leveraged position whose stop only
         lives in memory is exactly the risk this path exists to remove.
         """
+        position = update.position
         if not self._gateway.places_protection:
-            return []
+            return [], update
         side = position.side
         if side is None:  # pragma: no cover - caller checks is_flat
-            return []
+            return [], update
         try:
             placed = self._gateway.protect(
                 symbol=position.symbol,
@@ -390,15 +393,28 @@ class TradingPipeline:
                     entity_id=position.symbol,
                     payload={"symbol": position.symbol, "error": str(exc)},
                 )
-            ]
+            ], update
         if placed is None or not placed.any_placed:  # pragma: no cover - defensive
-            return []
+            return [], update
         self._logger.info(
             "protection_placed",
             symbol=position.symbol,
             stop_order_id=placed.stop_order_id,
             take_order_id=placed.take_order_id,
         )
+        # Stamp the ids onto the position so the same row carries level and order.
+        current = self._ledger.protection(position.symbol)
+        if current is not None:
+            update = replace(
+                update,
+                position=self._ledger.set_protection(
+                    replace(
+                        current,
+                        stop_order_id=placed.stop_order_id,
+                        tp_order_id=placed.take_order_id,
+                    )
+                ),
+            )
         return [
             AuditEvent(
                 event_type=EventType.PROTECTION_PLACED,
@@ -412,7 +428,7 @@ class TradingPipeline:
                     "take_profit": _text(approved.take_profit),
                 },
             )
-        ]
+        ], update
 
     def _release_venue_protection(self, symbol: str) -> None:
         """Cancel venue-side exits after the leg closed; never fails the close."""

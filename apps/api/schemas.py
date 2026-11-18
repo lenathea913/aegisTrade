@@ -67,6 +67,10 @@ class PositionResponse(BaseModel):
     margin: str = ""
     liquidation_price: str = ""
     roe_pct: str = ""
+    #: Venue order id of the stop, when one was recorded.
+    stop_order_id: str | None = None
+    #: True when the position carries a venue-side stop order id (green lock).
+    protected: bool = False
 
 
 class PositionsResponse(BaseModel):

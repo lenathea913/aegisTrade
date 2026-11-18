@@ -19,6 +19,8 @@ from aegis_execution.binance_broker import (
 from aegis_execution.binance_futures_broker import (
     BinanceFuturesTestnetBroker,
     FuturesPosition,
+    ProtectionFill,
+    ProtectionOrders,
     ensure_futures_testnet_base_url,
 )
 from aegis_execution.broker import Broker, BrokerFill, LiveBroker, PaperBroker, build_broker
@@ -51,6 +53,8 @@ __all__ = [
     "NonTestnetEndpointError",
     "PaperBroker",
     "PipelineResult",
+    "ProtectionFill",
+    "ProtectionOrders",
     "TradingPipeline",
     "build_broker",
     "ensure_futures_testnet_base_url",

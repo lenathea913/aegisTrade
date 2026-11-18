@@ -105,6 +105,8 @@ def test_position_row_matches_the_table_shape() -> None:
         "opened_at",
         "stop_loss",
         "take_profit",
+        "stop_order_id",
+        "tp_order_id",
     }
 
 

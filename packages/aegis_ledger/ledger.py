@@ -64,6 +64,9 @@ class PositionProtection:
     stop_loss: Decimal
     take_profit: Decimal | None = None
     strategy_id: str | None = None
+    #: The venue orders currently holding those levels, when the broker supports it.
+    stop_order_id: str | None = None
+    tp_order_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.qty <= 0:
@@ -298,7 +301,12 @@ class PortfolioLedger:
             raise LedgerError(f"cannot protect a flat position: {wanted}")
         self._protections[wanted] = protection
         updated = current.model_copy(
-            update={"stop_loss": protection.stop_loss, "take_profit": protection.take_profit}
+            update={
+                "stop_loss": protection.stop_loss,
+                "take_profit": protection.take_profit,
+                "stop_order_id": protection.stop_order_id,
+                "tp_order_id": protection.tp_order_id,
+            }
         )
         self._positions[wanted] = updated
         return updated
@@ -309,7 +317,12 @@ class PortfolioLedger:
         current = self._positions.get(wanted)
         if current is not None and not current.is_flat:
             self._positions[wanted] = current.model_copy(
-                update={"stop_loss": None, "take_profit": None}
+                update={
+                    "stop_loss": None,
+                    "take_profit": None,
+                    "stop_order_id": None,
+                    "tp_order_id": None,
+                }
             )
 
     # ------------------------------------------------------------ snapshots
@@ -427,10 +440,17 @@ class PortfolioLedger:
                 qty=replayed.abs_qty,
                 stop_loss=stop_loss,
                 take_profit=getattr(row, "take_profit", None),
+                stop_order_id=getattr(row, "stop_order_id", None),
+                tp_order_id=getattr(row, "tp_order_id", None),
             )
             self._protections[symbol] = protection
             self._positions[symbol] = replayed.model_copy(
-                update={"stop_loss": protection.stop_loss, "take_profit": protection.take_profit}
+                update={
+                    "stop_loss": protection.stop_loss,
+                    "take_profit": protection.take_profit,
+                    "stop_order_id": protection.stop_order_id,
+                    "tp_order_id": protection.tp_order_id,
+                }
             )
 
     def _compare_positions(self, stored: Sequence[Position]) -> list[str]:

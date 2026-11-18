@@ -52,6 +52,8 @@ class PositionRow(Protocol):
     leverage: int
     stop_loss: Any
     take_profit: Any
+    stop_order_id: Any
+    tp_order_id: Any
 
 
 def order_row(order: Order, approved: ApprovedOrder) -> dict[str, Any]:
@@ -111,6 +113,8 @@ def position_row(position: Position) -> dict[str, Any]:
         # exactly where the exposure is, and a flat row can carry neither.
         "stop_loss": position.stop_loss,
         "take_profit": position.take_profit,
+        "stop_order_id": position.stop_order_id,
+        "tp_order_id": position.tp_order_id,
     }
 
 
@@ -145,6 +149,8 @@ def position_from_row(row: PositionRow) -> Position:
         leverage=getattr(row, "leverage", 1),
         stop_loss=getattr(row, "stop_loss", None),
         take_profit=getattr(row, "take_profit", None),
+        stop_order_id=getattr(row, "stop_order_id", None),
+        tp_order_id=getattr(row, "tp_order_id", None),
     )
 
 

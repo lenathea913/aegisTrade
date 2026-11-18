@@ -332,6 +332,9 @@ def test_a_futures_fill_places_the_stop_on_the_venue(
     assert EventType.PROTECTION_PLACED in [event.event_type for event in result.events]
     # The stop is persisted with the position, not only kept in memory.
     assert writer.positions[0].stop_loss == intent.stop_loss
+    # ...and so are the venue order ids, or a restart cannot verify the stop exists.
+    assert writer.positions[0].stop_order_id == "9001"
+    assert writer.positions[0].tp_order_id == "9002"
 
 
 def test_closing_a_position_cancels_the_venue_exit(

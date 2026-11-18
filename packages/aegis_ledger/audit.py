@@ -34,6 +34,7 @@ class EventType(StrEnum):
     MANUAL_CLOSE = "manual_close"
     PROTECTION_PLACED = "protection_placed"
     PROTECTION_FAILED = "protection_failed"
+    PROTECTION_REARMED = "protection_rearmed"
     POSITION_DRIFT_DETECTED = "position_drift_detected"
     POSITION_DRIFT_ACKNOWLEDGED = "position_drift_acknowledged"
 

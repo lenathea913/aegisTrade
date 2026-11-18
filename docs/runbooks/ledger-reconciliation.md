@@ -79,6 +79,20 @@ quantity, entry price (> 0.5 %) or leverage:
 2. sends a CRITICAL alert (Telegram when `alerting.enabled`),
 3. writes `trading.reconciliation_state` with `entries_halted = true`.
 
+### A stop that fired is a fill, not a drift
+
+Before any of the above, the reconciler asks the venue what it executed
+(`GET /fapi/v1/allOrders` for `STOP_MARKET`/`TAKE_PROFIT_MARKET`, then
+`GET /fapi/v1/userTrades`). When those executions replay onto the book and land exactly
+on the venue's quantity, they are booked as trades with `strategy_id =
+'venue_protection'` — an order row, the trade(s), the new position and `trade_recorded`
+audit events, all in one transaction — and **no drift is raised**. The log line is
+`venue_fill_reconciled`.
+
+A drift is therefore only reported when the difference is left unexplained: a fill that
+would grow or flip the book, a total that does not match the venue, or a venue history
+that could not be read. Those still halt entries.
+
 What that means operationally:
 
 - **New entries stop immediately** — the runner logs `runner_entries_halted` and skips
@@ -115,15 +129,35 @@ becomes `unchecked` and the next pass decides again.
 If the badge says "Ledger unchecked", no comparison has run yet (paper mode, spot mode,
 or the runner has not started) — that is not a drift.
 
-## 5. Protective levels after a restart
+## 5. Protective levels and venue stops after a restart
 
-Open positions store `stop_loss`/`take_profit` in `trading.positions`; the database
-CHECK forbids a flat row from keeping either. Verify:
+Open positions store `stop_loss`/`take_profit` **and** the venue order ids of those exits
+(`stop_order_id`, `tp_order_id`) in `trading.positions`; the database CHECK forbids a flat
+row from keeping any of them. Verify:
 
 ```sql
-select symbol, qty, stop_loss, take_profit, leverage from trading.positions;
+select symbol, qty, stop_loss, take_profit, stop_order_id, tp_order_id, leverage
+from trading.positions;
 ```
 
-A non-flat row with `stop_loss IS NULL` is **unprotected**: it will not be watched by
-the monitor. Close it manually (`docs/runbooks/kill-switch.md`) or re-open it with a
-stop rather than leaving it running.
+A non-flat row with `stop_loss IS NULL` is **unprotected**: the monitor has nothing to
+watch and nothing can be re-armed. Close it manually (`docs/runbooks/kill-switch.md`) or
+re-open it with a stop rather than leaving it running.
+
+At startup the runner verifies every recorded stop against the venue
+(`GET /fapi/v1/openOrders`), once, before the first entry:
+
+- **`protection_intact`** — the id is still working; nothing is touched.
+- **`protection_rearmed`** (WARNING alert) — the id is gone or was never recorded. Any
+  leftover protection orders for the symbol are cancelled first (so the leg can never
+  hold two stops), the exits are re-placed, the new ids are saved, and a
+  `protection_rearmed` audit event is written. It is normal for the new id to differ
+  from the old one.
+- **`protection_check_failed`** / `unchecked` — the venue could not be asked. Nothing is
+  cancelled or re-placed: an unknown state is not evidence the stop is gone.
+- **`position_without_stop_level`** (CRITICAL alert) — nothing to re-arm; a human must
+  decide.
+
+`/positions` shows the result per row: **🔒 Locked** when a venue stop id is recorded,
+**🔓 Naked** when it is not. The badge reflects the *recorded* id; the startup check is
+what keeps it truthful.

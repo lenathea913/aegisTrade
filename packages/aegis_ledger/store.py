@@ -33,6 +33,9 @@ _POSITION_UPDATE_COLUMNS = (
     # Protective levels live on the row so a restart can rebuild the monitor's stops.
     "stop_loss",
     "take_profit",
+    # ...and the venue order ids, so a restart can check they are still working.
+    "stop_order_id",
+    "tp_order_id",
 )
 
 

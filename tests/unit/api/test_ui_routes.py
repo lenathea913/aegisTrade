@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from aegis_config import load_settings
 from aegis_core import (
@@ -99,7 +100,23 @@ def limits(**overrides: object) -> RiskLimit:
     return RiskLimit(**values)
 
 
-def build_client(*, risk_gate: RiskGate | None = None) -> tuple[TestClient, SignalService]:
+def no_cross_prefix() -> tuple[Candle, ...]:
+    """History whose **last** bar has no crossover: the normal empty scan."""
+    candles = crossover_history()
+    strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
+    for end in range(len(candles), strategy.warmup_bars, -1):
+        window = candles[:end]
+        if strategy.on_candle(window[-1], window) is None:
+            return window
+    raise AssertionError("fixture always crosses")
+
+
+def build_client(
+    *,
+    risk_gate: RiskGate | None = None,
+    candles: tuple[Candle, ...] | None = None,
+    signals_override: Any = None,
+) -> tuple[TestClient, SignalService]:
     settings = load_settings("paper")
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     service = ApiService(
@@ -108,13 +125,14 @@ def build_client(*, risk_gate: RiskGate | None = None) -> tuple[TestClient, Sign
         ledger=ledger,
         clock=lambda: NOW,
     )
-    signals = SignalService(
+    history = crossover_prefix() if candles is None else candles
+    signals = signals_override or SignalService(
         gate=risk_gate or RiskGate(limits=limits()),
         ledger=ledger,
-        candles=Repo(crossover_prefix()),
+        candles=Repo(history),
         symbols=(SYMBOL,),
         timeframe=TIMEFRAME,
-        clock=lambda: crossover_prefix()[-1].close_time + timedelta(seconds=5),
+        clock=lambda: history[-1].close_time + timedelta(seconds=5) if history else NOW,
     )
     app = create_app(settings=settings, service=service, signals=signals)
     return TestClient(app), signals
@@ -157,6 +175,46 @@ def test_partials_serve_htmx_polling() -> None:
     ):
         response = client.get(path)
         assert response.status_code == 200, path
+
+
+def test_the_scan_button_says_when_the_latest_bar_has_no_cross() -> None:
+    client, _ = build_client(candles=no_cross_prefix())
+
+    response = client.post("/ui/signals/generate")
+
+    assert response.status_code == 200
+    # Silence was the bug: the button looked broken while nothing was wrong.
+    assert "has not crossed" in response.text
+    assert "Scanning again reads the same bar" in response.text
+    assert "No signals yet" in response.text
+
+
+def test_the_scan_button_says_when_there_is_not_enough_history() -> None:
+    client, _ = build_client(candles=())
+
+    response = client.post("/ui/signals/generate")
+
+    assert response.status_code == 200
+    assert "stored candles" in response.text
+    assert "needs" in response.text
+
+
+def test_the_scan_button_reports_a_database_failure_in_the_page() -> None:
+    class BrokenSignals:
+        def scan(self) -> Any:
+            raise SQLAlchemyError("connection refused")
+
+        def list_signals(self) -> Any:  # pragma: no cover - never reached
+            raise AssertionError("list must not be called after a failed scan")
+
+    client, _ = build_client(signals_override=BrokenSignals())
+
+    response = client.post("/ui/signals/generate")
+
+    # An HTMX swap needs 200: a 500 leaves the old list on screen with no explanation.
+    assert response.status_code == 200
+    assert "Signal scan failed" in response.text
+    assert "database is not reachable" in response.text
 
 
 def test_signal_api_lifecycle() -> None:

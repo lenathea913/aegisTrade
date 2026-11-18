@@ -18,6 +18,7 @@ from signal_service.service import (
     DEFAULT_HISTORY_BARS,
     DEFAULT_SIGNAL_TTL_SECONDS,
     ConversionResult,
+    ScanReport,
     SignalService,
 )
 from signal_service.store import InMemorySignalStore, SignalStore, SqlSignalStore
@@ -28,6 +29,7 @@ __all__ = [
     "CandleRepository",
     "ConversionResult",
     "InMemorySignalStore",
+    "ScanReport",
     "SignalError",
     "SignalNotFoundError",
     "SignalPositionOpenError",

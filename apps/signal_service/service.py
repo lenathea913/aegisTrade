@@ -45,7 +45,7 @@ from aegis_core import (
 )
 from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
-from aegis_strategy import EmaCrossStrategy
+from aegis_strategy import EmaCrossParams, EmaCrossStrategy
 from signal_service.errors import (
     SignalNotFoundError,
     SignalPositionOpenError,
@@ -59,6 +59,7 @@ __all__ = [
     "DEFAULT_HISTORY_BARS",
     "DEFAULT_SIGNAL_TTL_SECONDS",
     "ConversionResult",
+    "ScanReport",
     "SignalService",
 ]
 
@@ -66,6 +67,33 @@ DEFAULT_SIGNAL_TTL_SECONDS = 3600
 DEFAULT_HISTORY_BARS = 300
 _HUNDRED = Decimal("100")
 _QUANTUM = Decimal("0.00000001")
+
+
+@dataclass(frozen=True)
+class ScanReport:
+    """What one scan found, including *why* it found nothing.
+
+    A scan that produces no signal is the normal case — the latest closed bar simply
+    has no cross — but an empty result with no explanation reads as a broken button.
+    This report is what the dashboard turns into a sentence.
+    """
+
+    scanned: int
+    created: tuple[Signal, ...]
+    skipped: dict[str, int]
+    bars_by_symbol: dict[str, int]
+    latest_bar_close: datetime | None
+    warmup_bars: int
+    fast_period: int
+    slow_period: int
+
+    @property
+    def no_cross(self) -> bool:
+        return self.created == () and self.skipped.get("no_cross", 0) > 0
+
+    @property
+    def insufficient_history(self) -> bool:
+        return self.created == () and self.skipped.get("insufficient_history", 0) == self.scanned
 
 
 @dataclass(frozen=True)
@@ -116,20 +144,58 @@ class SignalService:
 
     def generate(self) -> tuple[Signal, ...]:
         """Scan every configured symbol once and store the new signals."""
+        return self.scan().created
+
+    def scan(self) -> ScanReport:
+        """Scan every symbol once and say what happened, symbol by symbol.
+
+        ``generate`` is the same call without the diagnostics; the dashboard uses this
+        one so "nothing happened" can be explained instead of silently rendering the
+        previous list.
+        """
         now = self._clock()
         created: list[Signal] = []
+        skipped: dict[str, int] = {}
+        bars: dict[str, int] = {}
+        latest: datetime | None = None
+        params = EmaCrossParams()
+        warmup = params.slow_period + 1
+
         for symbol in self._symbols:
-            signal = self._generate_for(symbol, now)
+            history = self._candles.recent(symbol, self._timeframe, self._history_bars)
+            bars[symbol] = len(history)
+            if history:
+                close_time = history[-1].close_time
+                latest = close_time if latest is None or close_time > latest else latest
+            signal = self._generate_for(symbol, now, history, warmup=warmup)
             if signal is None:
+                reason = "insufficient_history" if len(history) < warmup else "no_cross"
+                skipped[reason] = skipped.get(reason, 0) + 1
                 continue
             self._store.add(signal)
             created.append(signal)
-        return tuple(created)
 
-    def _generate_for(self, symbol: str, now: datetime) -> Signal | None:
-        history = self._candles.recent(symbol, self._timeframe, self._history_bars)
+        return ScanReport(
+            scanned=len(self._symbols),
+            created=tuple(created),
+            skipped=skipped,
+            bars_by_symbol=bars,
+            latest_bar_close=latest,
+            warmup_bars=warmup,
+            fast_period=params.fast_period,
+            slow_period=params.slow_period,
+        )
+
+    def _generate_for(
+        self,
+        symbol: str,
+        now: datetime,
+        history: Sequence[Candle],
+        *,
+        warmup: int | None = None,
+    ) -> Signal | None:
         strategy = EmaCrossStrategy(symbol=symbol, timeframe=self._timeframe)
-        if len(history) < strategy.warmup_bars:
+        if len(history) < (warmup if warmup is not None else strategy.warmup_bars):
             return None
 
         intent = strategy.on_candle(history[-1], history)

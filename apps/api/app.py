@@ -60,6 +60,7 @@ from api.trading import close_position as close_via_gate
 from order_reconciler.state import SqlReconciliationState
 from position_monitor.quotes import CandleQuoteSource
 from signal_service import (
+    ScanReport,
     SignalNotFoundError,
     SignalPositionOpenError,
     SignalRiskRejectedError,
@@ -105,6 +106,39 @@ def _probe_exchange(settings: Settings) -> tuple[bool, str]:
 
 
 WEB_DIR = Path(__file__).parent
+
+
+def scan_message(report: ScanReport) -> tuple[str, str]:
+    """One sentence for the scan result, plus a tone for the badge.
+
+    Kept out of the route so the wording can be tested without a request or a database.
+    """
+    bar = (
+        "unknown"
+        if report.latest_bar_close is None
+        else report.latest_bar_close.strftime("%Y-%m-%d %H:%M UTC")
+    )
+    if report.created:
+        return (
+            f"{len(report.created)} new signal(s) generated for the bar closed at {bar}.",
+            "success",
+        )
+    if report.insufficient_history:
+        shortest = min(report.bars_by_symbol.items(), key=lambda item: item[1])
+        return (
+            f"No signal: {shortest[0]} has {shortest[1]} stored candles and the strategy "
+            f"needs {report.warmup_bars} (EMA {report.fast_period}/{report.slow_period}). "
+            "Let the collector write more history.",
+            "warning",
+        )
+    if report.no_cross:
+        return (
+            f"No new signals: EMA {report.fast_period}/{report.slow_period} has not "
+            f"crossed on the latest closed bar ({bar}). Scanning again reads the same "
+            "bar — the next signal appears after the next candle closes.",
+            "info",
+        )
+    return ("No new signals found for the current candles.", "info")
 
 
 def _wants_html(request: Request) -> bool:
@@ -692,13 +726,47 @@ def create_app(
 
     @app.post("/ui/signals/generate", include_in_schema=False)
     def generate_from_ui(request: Request) -> Response:
+        """Scan the stored candles and always answer with a sentence.
+
+        A scan that finds nothing is normal (no cross on the latest closed bar), but an
+        unchanged list with no explanation looks like a broken button. A database
+        failure is reported in the page and in the log instead of as a silent 500, so
+        "nothing appeared" always has a visible reason.
+        """
         service_ = _signals()
-        service_.generate()
-        items = service_.list_signals()
+        message: str | None = None
+        tone = "info"
+        try:
+            report = service_.scan()
+            items = service_.list_signals()
+        except SQLAlchemyError as exc:
+            logger.error("signal_scan_failed", error=str(exc))
+            items = ()
+            message = (
+                "Signal scan failed: the database is not reachable, so nothing was "
+                "saved. See the API logs."
+            )
+            tone = "error"
+        else:
+            message, tone = scan_message(report)
+            logger.info(
+                "signal_scan",
+                created=len(report.created),
+                scanned=report.scanned,
+                skipped=report.skipped,
+                latest_bar_close=None
+                if report.latest_bar_close is None
+                else report.latest_bar_close.isoformat(),
+            )
         return _render(
             request,
             "partials/signals.html",
-            {"signals": items, "open_sides": _open_sides()},
+            {
+                "signals": items,
+                "open_sides": _open_sides(),
+                "message": message,
+                "message_tone": tone,
+            },
         )
 
     if settings.observability.metrics_enabled:

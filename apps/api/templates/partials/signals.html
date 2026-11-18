@@ -1,5 +1,12 @@
+{% if message %}
+{% set tone_class = "border-rose-500/50 bg-rose-500/10 text-rose-100" if message_tone == "error" else ("border-emerald-500/40 bg-emerald-500/10 text-emerald-200" if message_tone == "success" else ("border-amber-500/40 bg-amber-500/10 text-amber-200" if message_tone == "warning" else "border-slate-700 bg-slate-800/60 text-slate-300")) %}
+<p class="m-3 rounded border px-3 py-2 text-sm {{ tone_class }}" role="status">{{ message }}</p>
+{% endif %}
 {% if signals | length == 0 %}
-<p class="p-4 text-sm text-slate-400">No signals.</p>
+<p class="p-4 text-sm text-slate-400">
+  No signals yet. Press “Scan candles” — generation reads stored candles and asks the
+  risk engine for a preview.
+</p>
 {% else %}
 <ul class="divide-y divide-slate-800">
   {% for signal in signals %}

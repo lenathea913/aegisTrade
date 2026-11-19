@@ -59,9 +59,15 @@ def ledger_with(
 
 
 class FakeVenue:
-    def __init__(self, open_ids: set[str] | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        open_ids: set[str] | None = None,
+        error: Exception | None = None,
+        mark: str | None = "30000",
+    ) -> None:
         self.open_ids = open_ids or set()
         self.error = error
+        self.mark = None if mark is None else Decimal(mark)
         self.cancelled: list[str] = []
         self.placed: list[dict[str, Any]] = []
 
@@ -69,6 +75,9 @@ class FakeVenue:
         if self.error is not None:
             raise self.error
         return set(self.open_ids)
+
+    def mark_price(self, symbol: str) -> Decimal | None:
+        return self.mark
 
     def cancel_protection_orders(self, symbol: str) -> int:
         self.cancelled.append(symbol)
@@ -253,6 +262,64 @@ def test_a_repeat_rearm_is_logged_but_alerted_once() -> None:
 
     assert len(venue.placed) == 2
     assert [alert.level for alert in alerter.alerts] == [AlertLevel.WARNING]
+
+
+def test_a_level_on_the_wrong_side_of_the_mark_is_never_sent() -> None:
+    """Long with the stop above the mark: the venue would trigger it immediately."""
+    ledger = ledger_with(stop_loss="30400", take_profit="31200")
+    venue = FakeVenue(set(), mark="30000")
+    rearmer, writer, alerter = build(ledger, venue)
+
+    results = rearmer.run()
+
+    assert [result.status for result in results] == ["invalid_level"]
+    assert results[0].reason == "stop_level_invalid"
+    # Nothing is cancelled either: leaving a working target alone beats removing it.
+    assert venue.cancelled == [] and venue.placed == []
+    assert writer.positions == [] and writer.audits == []
+    assert alerter.alerts[0].level is AlertLevel.CRITICAL
+    assert alerter.alerts[0].context["reason"] == "stop_level_invalid"
+    assert alerter.alerts[0].context["mark_price"] == "30000"
+
+
+def test_a_valid_short_stop_is_re_armed_above_the_mark() -> None:
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    ledger.apply_trade(
+        Trade(
+            order_id="ord_short",
+            symbol="BTC/USDT",
+            side=Side.SELL,
+            qty=Decimal("0.1"),
+            price=Decimal("30000"),
+            filled_at=NOW,
+            strategy_id="simple_ema_cross",
+            leverage=3,
+        )
+    )
+    ledger.set_protection(
+        PositionProtection(
+            symbol="BTC/USDT",
+            side=Side.SELL,
+            qty=Decimal("0.1"),
+            stop_loss=Decimal("30600"),
+            take_profit=Decimal("28800"),
+        )
+    )
+    venue = FakeVenue(set(), mark="30000")
+    rearmer, _writer, alerter = build(ledger, venue)
+
+    assert [result.status for result in rearmer.run()] == ["rearmed"]
+    assert venue.placed[0]["stop_loss"] == Decimal("30600")
+    assert alerter.alerts[0].level is AlertLevel.WARNING
+
+
+def test_an_unknown_mark_does_not_block_a_needed_re_arm() -> None:
+    venue = FakeVenue(set(), mark=None)
+    rearmer, _writer, alerter = build(ledger_with(), venue)
+
+    assert [result.status for result in rearmer.run()] == ["rearmed"]
+    assert len(venue.placed) == 1
+    assert alerter.alerts[0].level is AlertLevel.WARNING
 
 
 def test_a_flat_book_needs_no_check() -> None:

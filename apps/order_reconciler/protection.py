@@ -12,7 +12,9 @@ This module closes that gap. On startup each open position is checked against th
   are cancelled so the leg cannot end up with two stops, the exits are placed again, the
   new ids are persisted, and a WARNING says what happened;
 * the position has no stop *level* at all -> CRITICAL: there is nothing to re-arm and a
-  human has to decide.
+  human has to decide;
+* the level is on the wrong side of the mark -> nothing is sent: such a stop would
+  trigger at once, so it is reported (``stop_level_invalid``) instead of placed.
 
 The stop matters more than the target, so a missing target alone is logged, not
 re-placed: submitting a fresh stop to recover a target would be a worse trade.
@@ -31,7 +33,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from aegis_alerting import Alert, Alerter, AlertLevel
 from aegis_core import Position, PositionSide, Side, utc_now
@@ -46,6 +48,11 @@ from aegis_ledger import (
 from aegis_observability import get_logger
 
 __all__ = ["ProtectionAlertGate", "ProtectionReArmer", "ReArmResult", "VenueProtection"]
+
+
+def _behind_mark(stop_loss: Decimal, side: Side, mark: Decimal) -> bool:
+    """True when the stop is not on the protective side of the current price."""
+    return stop_loss >= mark if side is Side.BUY else stop_loss <= mark
 
 
 class ProtectionAlertGate:
@@ -93,6 +100,9 @@ class VenueProtection(Protocol):
         qty: Decimal | None = None,
     ) -> Any:
         """Place the exits; the result carries ``stop_order_id``/``take_order_id``."""
+
+    def mark_price(self, symbol: str) -> Decimal | None:
+        """Current mark of ``symbol``, or ``None`` when the venue cannot say."""
 
 
 @dataclass(frozen=True)
@@ -236,6 +246,47 @@ class ProtectionReArmer:
                 reason="venue_unreachable",
             )
 
+        # A level on the wrong side of the mark would trigger the moment the venue
+        # accepts it, and re-placing it every cycle would look like protection while
+        # behaving like a market exit. Refuse, and leave the venue untouched: cancelling
+        # a working target to then place nothing would make things worse.
+        mark = self._mark(position.symbol)
+        if mark is not None and _behind_mark(position.stop_loss, side, mark):
+            self._logger.error(
+                "stop_level_invalid",
+                symbol=position.symbol,
+                side=side.value,
+                stop_loss=str(position.stop_loss),
+                mark_price=str(mark),
+                detail="the stop is on the wrong side of the mark; the venue was not touched",
+            )
+            self._notify(
+                AlertLevel.CRITICAL,
+                symbol=position.symbol,
+                status="invalid_level",
+                reason="stop_level_invalid",
+                title="Stop level invalid: not re-armed",
+                message=(
+                    f"{position.symbol} stop {position.stop_loss} is on the wrong side "
+                    f"of mark {mark}; check it by hand."
+                ),
+                context={
+                    "symbol": position.symbol,
+                    "status": "UNPROTECTED",
+                    "reason": "stop_level_invalid",
+                    "side": side.value,
+                    "stop_loss": str(position.stop_loss),
+                    "mark_price": str(mark),
+                },
+            )
+            return ReArmResult(
+                symbol=position.symbol,
+                status="invalid_level",
+                stop_order_id=position.stop_order_id,
+                detail=(f"stop {position.stop_loss} is not on the protective side of mark {mark}"),
+                reason="stop_level_invalid",
+            )
+
         # Cancel first: the leg must never hold two stops, and a stale target that
         # outlived its level would close the position at a price nobody chose.
         try:
@@ -372,6 +423,21 @@ class ProtectionReArmer:
             detail=reason,
             reason=code,
         )
+
+    def _mark(self, symbol: str) -> Decimal | None:
+        """Ask the venue for the mark; unknown means "do not block the re-arm".
+
+        Leaving a confirmed-naked position unprotected because one price read failed
+        would be the worse outcome, so an unreachable mark only skips the sanity check.
+        """
+        method = getattr(self._venue, "mark_price", None)
+        if not callable(method):
+            return None
+        try:
+            return cast(Decimal | None, method(symbol))
+        except ExchangeError as exc:
+            self._logger.warning("protection_mark_unavailable", symbol=symbol, error=str(exc))
+            return None
 
     def _notify(
         self,

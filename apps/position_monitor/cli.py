@@ -4,10 +4,11 @@
     python -m position_monitor --interval 15          # loop (SIGINT to stop)
     python -m position_monitor --once --no-restore    # ignore positions in the DB
 
-The monitor runs in its own process, so it loads the open positions and their stop /
-target levels from the database at startup (``--restore``, on by default). Without
-that it would watch an empty ledger, because ledger state is not yet rebuilt from the
-tables automatically (see ``docs/runbooks/ledger-reconciliation.md``).
+The monitor runs in its own process, so it loads the open positions, their leverage and
+their stop/target levels (with the venue order ids) from ``trading.positions`` at
+startup (``--restore``, on by default). Without that it would watch an empty ledger,
+because ledger state is not rebuilt from the tables automatically (see
+``docs/runbooks/ledger-reconciliation.md``).
 
 Prices come from the newest stored candle, which the collector writes; the monitor
 never fetches from an exchange itself.
@@ -28,7 +29,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from aegis_config import Settings, load_settings
 from aegis_core import Position
 from aegis_db import (
-    OrderRecord,
     PositionRecord,
     create_engine_from_settings,
     create_session_factory,
@@ -36,6 +36,7 @@ from aegis_db import (
 )
 from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerStore, LedgerWriter, PortfolioLedger, PositionProtection
+from aegis_ledger.records import position_from_row
 from aegis_observability import get_logger
 from aegis_risk import RiskGate
 from order_reconciler.cli import reconcile_positions_once
@@ -49,51 +50,39 @@ __all__ = ["action_payload", "book_venue_fills", "build_monitor", "main", "resto
 def restore_from_database(
     ledger: PortfolioLedger, factory: sessionmaker[Session]
 ) -> tuple[Position, ...]:
-    """Load open positions and the newest stop/target per symbol from the tables.
+    """Load open positions and their protection from ``trading.positions``.
+
+    One row per symbol is the whole truth: quantity, cost basis, leverage, the stop /
+    target levels and the venue order ids. The newest order row is *not* a substitute:
+    it carries no ``stop_order_id``, it may be missing between restarts, and reading a
+    global window of orders left symbols with no protection at all — a monitor that
+    only iterates ``ledger.protections`` would then not watch those positions.
 
     Realized PnL history cannot be reconstructed from a position row, so the loss
     windows restart at zero — a limitation recorded in the reconciliation runbook.
     """
     with session_scope(factory) as session:
-        position_rows = (
+        rows = (
             session.execute(select(PositionRecord).where(PositionRecord.qty != 0)).scalars().all()
         )
-        order_rows = (
-            session.execute(select(OrderRecord).order_by(OrderRecord.created_at.desc()).limit(200))
-            .scalars()
-            .all()
-        )
 
-    positions = tuple(
-        Position(
-            symbol=row.symbol,
-            qty=row.qty,
-            avg_entry=row.avg_entry,
-            unrealized_pnl=row.unrealized_pnl,
-            realized_pnl=row.realized_pnl,
-            opened_at=row.opened_at,
-        )
-        for row in position_rows
-    )
+    positions = tuple(position_from_row(row) for row in rows)
     ledger.restore(positions)
-
-    newest: dict[str, OrderRecord] = {}
-    for order in order_rows:
-        newest.setdefault(order.symbol, order)
-
     for position in positions:
-        latest_order = newest.get(position.symbol)
         side = position.side
-        if latest_order is None or side is None:
+        if side is None or position.stop_loss is None:
             continue
+        # The ids matter: without them a restart would re-arm a stop that is already
+        # working, cancelling and re-placing it on every check.
         ledger.set_protection(
             PositionProtection(
                 symbol=position.symbol,
                 side=side,
                 qty=position.abs_qty,
-                stop_loss=latest_order.stop_loss,
-                take_profit=latest_order.take_profit,
-                strategy_id=latest_order.strategy_id,
+                stop_loss=position.stop_loss,
+                take_profit=position.take_profit,
+                stop_order_id=position.stop_order_id,
+                tp_order_id=position.tp_order_id,
             )
         )
     return positions

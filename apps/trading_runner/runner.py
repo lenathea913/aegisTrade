@@ -46,7 +46,6 @@ from aegis_observability import get_logger
 from aegis_risk import RiskGate
 from position_monitor import BrokerVenueCheck, MonitorAction, PositionMonitor
 from position_monitor.quotes import QuoteSource
-from position_monitor.venue import VenueCheck
 from signal_service import SignalRiskRejectedError, SignalService, SignalStateError
 from trading_runner.candles import LatestCandleSource
 
@@ -316,9 +315,10 @@ class TradingRunner:
         if not self._settings.runner.monitor_enabled:
             return ()
         self._accrue_funding()
-        with self._writer_factory() as writer, self._venue_check() as venue_check:
-            monitor = self._monitor(writer, venue_check=venue_check)
+        with self._writer_factory() as writer, self._cycle_broker() as broker:
+            monitor = self._monitor(writer, broker=broker)
             actions = monitor.check()
+            withheld = monitor.withheld_venue_executions
         for action in actions:
             self._logger.info(
                 "runner_monitor_action",
@@ -334,6 +334,12 @@ class TradingRunner:
                     reasons=list(action.result.reasons),
                     motivation=get_random_motivation(),
                 )
+        if withheld:
+            # The venue executed before the monitor did. Booking those fills and
+            # re-arming the remainder is one reconciliation pass, run *after* this
+            # cycle's write transaction closed: the reconciler opens its own.
+            self._logger.warning("monitor_venue_execution_reconcile", symbols=list(withheld))
+            self.run_position_reconciliation()
         return actions
 
     def _accrue_funding(self) -> None:
@@ -379,9 +385,11 @@ class TradingRunner:
 
     # -------------------------------------------------------------- internals
 
-    def _pipeline(self, writer: LedgerWriter | None) -> TradingPipeline:
+    def _pipeline(self, writer: LedgerWriter | None, *, broker: Any = None) -> TradingPipeline:
         gateway = ExecutionGateway(
-            build_broker(
+            broker
+            if broker is not None
+            else build_broker(
                 self._settings.execution,
                 exchange=self._settings.exchange,
                 live_confirm=self._settings.live_confirm,
@@ -396,12 +404,15 @@ class TradingRunner:
             alerter=self._alerter,
         )
 
-    def _monitor(
-        self, writer: LedgerWriter | None, *, venue_check: VenueCheck | None = None
-    ) -> PositionMonitor:
+    def _monitor(self, writer: LedgerWriter | None, *, broker: Any = None) -> PositionMonitor:
+        venue_check = (
+            BrokerVenueCheck(broker)
+            if broker is not None and callable(getattr(broker, "fetch_positions", None))
+            else None
+        )
         return PositionMonitor(
             ledger=self._ledger,
-            pipeline=self._pipeline(writer),
+            pipeline=self._pipeline(writer, broker=broker),
             quotes=self._quotes,
             clock=self._clock,
             use_live_price=self._settings.position_monitor.use_live_price,
@@ -409,12 +420,15 @@ class TradingRunner:
             protect_take_profit=self._settings.position_monitor.protect_take_profit,
             # Ask the venue before closing: the stop may have fired first.
             venue_check=venue_check,
-            on_venue_execution=self._reconcile_venue_execution,
         )
 
     @contextmanager
-    def _venue_check(self) -> Iterator[VenueCheck | None]:
-        """A broker-backed pre-exit check, or ``None`` when the venue cannot answer."""
+    def _cycle_broker(self) -> Iterator[Any | None]:
+        """One broker for the whole monitor cycle, shared by the gateway and the check.
+
+        ``None`` means paper: the pipeline then builds its own paper broker and there is
+        no venue to ask about a fill.
+        """
         if self._settings.execution.broker == "paper":
             yield None
             return
@@ -424,16 +438,8 @@ class TradingRunner:
             live_confirm=self._settings.live_confirm,
         )
         try:
-            supports = callable(getattr(broker, "fetch_open_order_ids", None)) and callable(
-                getattr(broker, "fetch_positions", None)
-            )
-            yield BrokerVenueCheck(broker) if supports else None
+            yield broker
         finally:
             close = getattr(broker, "close", None)
             if callable(close):
                 close()
-
-    def _reconcile_venue_execution(self, symbol: str) -> None:
-        """Book a fill the venue executed before the monitor could send its own exit."""
-        self._logger.warning("monitor_venue_execution_reconcile", symbol=symbol)
-        self.run_position_reconciliation()

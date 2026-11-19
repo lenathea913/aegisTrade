@@ -176,12 +176,16 @@ not once a minute, while every cycle is still logged. A change of state always a
 ### The venue can close before the local monitor does
 
 Both the venue's stop and `apps/position_monitor` can close the same leg. Before an exit
-is sent, the monitor asks the venue (open orders + `positionRisk`) whether the recorded
-protection order is gone **and** the leg is smaller than the book believes. If both hold,
-the exit is withheld (`monitor_exit_skipped_venue_executed`) and a reconciliation pass
-books the venue's fill (`venue_fill_reconciled`) instead — no second order is sent, so no
-new position can be opened in the opposite direction. An unreachable venue answers
-nothing and the exit proceeds; the submission would fail anyway.
+is sent, the monitor asks the venue one question — how much of the leg it still holds
+(`GET /fapi/v2/positionRisk`). When the venue holds **less** than the book, the exit is
+withheld (`monitor_exit_skipped_venue_executed`): the book quantity is stale, and a
+hedge-mode order cannot be trimmed by the venue (no `reduceOnly`), so closing the book's
+quantity could be rejected or leave the book believing in exposure that is gone.
+
+After the cycle's write transaction closes, one reconciliation pass books the venue's
+fill (`venue_fill_reconciled`) and re-arms the remainder; the monitor never reconciles
+inside its own transaction. An unreachable venue answers nothing and the exit proceeds;
+the submission would fail anyway.
 
 `/positions` shows the result per row: **🔒 Locked** when a venue stop id is recorded,
 **🔓 Naked** when it is not. The badge reflects the *recorded* id; the per-cycle check is

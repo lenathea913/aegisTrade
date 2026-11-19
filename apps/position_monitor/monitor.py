@@ -13,10 +13,12 @@ Rules, in order:
    so a rejection is recorded in the audit trail exactly like any other rejection.
 4. A position that is already flat is skipped: the ledger drops its protection when
    the position closes, so this is only a guard against a race in the caller.
-5. Before the intent is built, the venue is asked whether it already closed (or
-    reduced) the leg and its protection order is gone. If so the exit is *withheld*:
-    the venue executed first, and booking that fill is the reconciliation's job — see
-    ``position_monitor.venue``.
+5. Before the intent is built, the venue is asked how much of the leg it still holds.
+   When it holds less than the book, the exit is *withheld*: the venue executed first,
+   and booking that fill (then re-arming the remainder) is the reconciliation's job —
+   see ``position_monitor.venue``. Withheld symbols are exposed on
+   ``withheld_venue_executions`` so the caller can reconcile *after* its own write
+   transaction closes.
 """
 
 from __future__ import annotations
@@ -92,7 +94,6 @@ class PositionMonitor:
         use_live_price: bool = False,
         live_quotes: QuoteSource | None = None,
         venue_check: VenueCheck | None = None,
-        on_venue_execution: Callable[[str], None] | None = None,
     ) -> None:
         self._ledger = ledger
         self._pipeline = pipeline
@@ -102,10 +103,10 @@ class PositionMonitor:
         self._protect_take_profit = protect_take_profit
         self._use_live_price = use_live_price
         self._live_quotes = live_quotes
-        #: Answers "did the venue already close this leg?" before an exit is sent.
+        #: Answers "how much of this leg does the venue still hold?" before an exit.
         self._venue_check = venue_check
-        #: Called when an exit is withheld, so the fill can be booked immediately.
-        self._on_venue_execution = on_venue_execution
+        #: Symbols whose exit was withheld this pass (see ``withheld_venue_executions``).
+        self._withheld: list[str] = []
         self._logger = get_logger("aegis.position_monitor")
 
     @property
@@ -113,9 +114,20 @@ class PositionMonitor:
         """The book this monitor watches (restored by the CLI at startup)."""
         return self._ledger
 
+    @property
+    def withheld_venue_executions(self) -> tuple[str, ...]:
+        """Symbols whose exit the last ``check`` withheld because the venue got there first.
+
+        The caller reconciles them once, after its own write transaction closes: the
+        reconciler commits position rows and the audit trail in a transaction of its own,
+        and nesting two writers over the same row is asking for a lost update.
+        """
+        return tuple(self._withheld)
+
     def check(self) -> tuple[MonitorAction, ...]:
         """Evaluate every protected position once; return the exit attempts."""
         actions: list[MonitorAction] = []
+        self._withheld = []
         for protection in self._ledger.protections:
             action = self._check_one(protection)
             if action is not None:
@@ -140,7 +152,7 @@ class PositionMonitor:
         if trigger is None:
             return None
 
-        if self._venue_executed_first(protection, position):
+        if self._venue_already_closed(protection, position):
             return None
 
         now = self._clock()
@@ -174,52 +186,40 @@ class PositionMonitor:
             level=level,
         )
 
-    def _venue_executed_first(self, protection: PositionProtection, position: Position) -> bool:
-        """True when the venue already closed (or reduced) the leg we wanted to exit.
+    def _venue_already_closed(self, protection: PositionProtection, position: Position) -> bool:
+        """True when the venue holds less of this leg than the book believes.
 
         Withholding the exit here is what keeps one stop from becoming two: the venue
-        executed, so the only remaining work is to *record* that execution. An
-        unreachable venue answers nothing and the exit proceeds — the broker would fail
-        the submission anyway, and guessing "already closed" would leave a position
+        executed, so the only remaining work is to *record* that execution and re-arm
+        what is left. The book quantity is the wrong size in that state whatever the
+        venue's order book says, and a hedge-mode order cannot be trimmed by the venue.
+
+        An unreachable venue answers nothing and the exit proceeds — the broker would
+        fail the submission anyway, and guessing "already closed" would leave a position
         unprotected.
         """
         if self._venue_check is None or protection.side is None:
             return False
-        ids = tuple(
-            order_id
-            for order_id in (position.stop_order_id, position.tp_order_id)
-            if order_id is not None
-        )
         try:
-            state = self._venue_check.inspect(
-                protection.symbol, side=protection.side, protection_ids=ids
-            )
+            venue_qty = self._venue_check.held_qty(protection.symbol, side=protection.side)
         except ExchangeError as exc:
             self._logger.warning(
                 "monitor_venue_check_failed", symbol=protection.symbol, error=str(exc)
             )
             return False
-        if state.protection_open or state.venue_qty >= position.abs_qty - _QTY_EPSILON:
+        if venue_qty >= position.abs_qty - _QTY_EPSILON:
             return False
 
         self._logger.warning(
             "monitor_exit_skipped_venue_executed",
             symbol=protection.symbol,
             ledger_qty=str(position.abs_qty),
-            venue_qty=str(state.venue_qty),
+            venue_qty=str(venue_qty),
             stop_order_id=position.stop_order_id,
             tp_order_id=position.tp_order_id,
             detail="the venue already closed part or all of this leg; booking its fill",
         )
-        if self._on_venue_execution is not None:
-            try:
-                self._on_venue_execution(protection.symbol)
-            except Exception as exc:  # a failed bookkeeping pass must not stop the monitor
-                self._logger.error(
-                    "monitor_venue_reconcile_failed",
-                    symbol=protection.symbol,
-                    error=str(exc),
-                )
+        self._withheld.append(protection.symbol)
         return True
 
     def _quote(self, symbol: str) -> MarketQuote | None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -17,7 +16,7 @@ from aegis_execution import (
 )
 from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
-from position_monitor import ExitTrigger, PositionMonitor, VenuePositionState
+from position_monitor import ExitTrigger, PositionMonitor
 
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 ENTRY_TIME = NOW - timedelta(hours=3)
@@ -220,27 +219,18 @@ def test_live_price_uses_the_ledger_mark_when_enabled() -> None:
 
 
 class FakeVenue:
-    """Answers the pre-exit question with a fixed venue state."""
+    """Answers the pre-exit question with a fixed leg size."""
 
-    def __init__(
-        self,
-        qty: str,
-        *,
-        protection_open: bool = False,
-        error: Exception | None = None,
-    ) -> None:
+    def __init__(self, qty: str, *, error: Exception | None = None) -> None:
         self.qty = Decimal(qty)
-        self.protection_open = protection_open
         self.error = error
         self.asked: list[str] = []
 
-    def inspect(
-        self, symbol: str, *, side: Side, protection_ids: Sequence[str] = ()
-    ) -> VenuePositionState:
+    def held_qty(self, symbol: str, *, side: Side) -> Decimal:
         self.asked.append(symbol)
         if self.error is not None:
             raise self.error
-        return VenuePositionState(venue_qty=self.qty, protection_open=self.protection_open)
+        return self.qty
 
 
 def test_an_exit_is_withheld_when_the_venue_already_closed() -> None:
@@ -248,36 +238,25 @@ def test_an_exit_is_withheld_when_the_venue_already_closed() -> None:
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     pipeline = _pipeline(ledger)
     _open_long(pipeline, ledger)
-    booked: list[str] = []
-    monitor = _monitor(
-        pipeline,
-        ledger,
-        Quotes({"BTC/USDT": "28999"}),
-        venue_check=FakeVenue("0"),
-        on_venue_execution=booked.append,
-    )
+    monitor = _monitor(pipeline, ledger, Quotes({"BTC/USDT": "28999"}), venue_check=FakeVenue("0"))
 
     assert monitor.check() == ()
-    # Nothing was sent, and the venue's fill was handed to the reconciler.
+    # Nothing was sent and nothing was booked here: the reconciler owns that write.
     assert ledger.position("BTC/USDT").qty == Decimal("0.1")
-    assert booked == ["BTC/USDT"]
+    assert monitor.withheld_venue_executions == ("BTC/USDT",)
 
 
 def test_a_reduced_venue_position_also_withholds_the_exit() -> None:
+    """A partial fill leaves a remainder: the book qty would over-close what is left."""
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     pipeline = _pipeline(ledger)
     _open_long(pipeline, ledger)
-    booked: list[str] = []
     monitor = _monitor(
-        pipeline,
-        ledger,
-        Quotes({"BTC/USDT": "28999"}),
-        venue_check=FakeVenue("0.04"),
-        on_venue_execution=booked.append,
+        pipeline, ledger, Quotes({"BTC/USDT": "28999"}), venue_check=FakeVenue("0.04")
     )
 
     assert monitor.check() == ()
-    assert booked == ["BTC/USDT"]
+    assert monitor.withheld_venue_executions == ("BTC/USDT",)
 
 
 def test_the_exit_is_sent_while_the_venue_still_holds_the_leg() -> None:
@@ -285,33 +264,33 @@ def test_the_exit_is_sent_while_the_venue_still_holds_the_leg() -> None:
     pipeline = _pipeline(ledger)
     _open_long(pipeline, ledger)
     monitor = _monitor(
-        pipeline,
-        ledger,
-        Quotes({"BTC/USDT": "28999"}),
-        venue_check=FakeVenue("0.1"),
+        pipeline, ledger, Quotes({"BTC/USDT": "28999"}), venue_check=FakeVenue("0.1")
     )
 
     actions = monitor.check()
 
     assert len(actions) == 1
     assert actions[0].closed is True
+    assert not monitor.withheld_venue_executions
 
 
-def test_the_exit_is_sent_while_the_venue_stop_is_still_working() -> None:
+def test_a_withheld_execution_is_not_carried_into_the_next_check() -> None:
+    """The ledger, not a stale list, decides: once the venue holds the leg again, exit."""
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     pipeline = _pipeline(ledger)
     _open_long(pipeline, ledger)
-    monitor = _monitor(
-        pipeline,
-        ledger,
-        Quotes({"BTC/USDT": "28999"}),
-        venue_check=FakeVenue("0.1", protection_open=True),
-    )
+    venue = FakeVenue("0")
+    monitor = _monitor(pipeline, ledger, Quotes({"BTC/USDT": "28999"}), venue_check=venue)
 
+    assert monitor.check() == ()
+    assert monitor.withheld_venue_executions == ("BTC/USDT",)
+
+    venue.qty = Decimal("0.1")
     actions = monitor.check()
 
     assert len(actions) == 1
     assert actions[0].closed is True
+    assert not monitor.withheld_venue_executions
 
 
 def test_an_unreachable_venue_does_not_block_the_exit() -> None:
@@ -319,20 +298,18 @@ def test_an_unreachable_venue_does_not_block_the_exit() -> None:
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     pipeline = _pipeline(ledger)
     _open_long(pipeline, ledger)
-    booked: list[str] = []
     monitor = _monitor(
         pipeline,
         ledger,
         Quotes({"BTC/USDT": "28999"}),
         venue_check=FakeVenue("0", error=ExchangeUnavailableError("timeout")),
-        on_venue_execution=booked.append,
     )
 
     actions = monitor.check()
 
     assert len(actions) == 1
     assert actions[0].closed is True
-    assert booked == []
+    assert not monitor.withheld_venue_executions
 
 
 def test_no_venue_check_when_no_level_is_touched() -> None:

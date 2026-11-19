@@ -119,6 +119,12 @@ class _PositionFeed:
             return ()
         return cast(tuple[VenueFill, ...], tuple(method(symbol, since=since)))
 
+    def advance_fill_cursor(self, symbol: str, *, filled_at: Any, execution_id: str = "") -> None:
+        """Forward the booking watermark; a broker without one re-reads the window."""
+        method = getattr(self._broker, "advance_fill_cursor", None)
+        if callable(method):
+            method(symbol, filled_at=filled_at, execution_id=execution_id)
+
 
 @contextmanager
 def _ledger_writer(factory: sessionmaker[Session]) -> Iterator[LedgerStore]:

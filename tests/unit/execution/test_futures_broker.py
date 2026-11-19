@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -270,6 +270,89 @@ def test_protection_orders_close_the_leg_at_a_mark_price_trigger() -> None:
     assert stop["workingType"] == "MARK_PRICE"
     assert stop["side"] == "SELL"
     assert stop["positionSide"] == "LONG"
+
+
+def _history_trade(execution_id: int, *, order_id: int, at: datetime = NOW) -> dict[str, Any]:
+    return {
+        "id": execution_id,
+        "orderId": order_id,
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "positionSide": "LONG",
+        "qty": "0.1",
+        "price": "29400",
+        "commission": "0.01",
+        "realizedPnl": "1",
+        "time": int(at.timestamp() * 1000),
+    }
+
+
+def test_fill_history_reads_every_page() -> None:
+    """A history longer than 1000 rows must not look like "no fill explains it"."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(httpx.QueryParams(request.url.query))
+        if request.url.path.endswith("/allOrders"):
+            if "orderId" not in params:
+                return httpx.Response(
+                    200,
+                    json=[{"orderId": i, "type": "STOP_MARKET"} for i in range(1, 1001)],
+                )
+            return httpx.Response(200, json=[{"orderId": 1001, "type": "STOP_MARKET"}])
+        if "fromId" not in params:
+            return httpx.Response(200, json=[_history_trade(i, order_id=i) for i in range(1, 1001)])
+        return httpx.Response(200, json=[_history_trade(1001, order_id=1001)])
+
+    broker, calls = build(handler)
+
+    fills = broker.fetch_protection_fills("BTC/USDT", since=NOW)
+
+    assert len(fills) == 1001
+    assert fills[-1].order_id == "1001"
+    assert [call.url.path for call in calls].count("/fapi/v1/allOrders") == 2
+    assert [call.url.path for call in calls].count("/fapi/v1/userTrades") == 2
+
+
+def test_the_watermark_hides_fills_that_were_already_booked() -> None:
+    state = {"second": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/allOrders"):
+            return httpx.Response(200, json=[{"orderId": 11, "type": "STOP_MARKET"}])
+        trades = [_history_trade(101, order_id=11)]
+        if state["second"]:
+            trades.append(_history_trade(102, order_id=11, at=NOW + timedelta(seconds=30)))
+        return httpx.Response(200, json=trades)
+
+    broker, _calls = build(handler)
+
+    assert [fill.execution_id for fill in broker.fetch_protection_fills("BTC/USDT", since=NOW)] == [
+        "101"
+    ]
+    broker.advance_fill_cursor("BTC/USDT", filled_at=NOW, execution_id="101")
+    state["second"] = True
+
+    # The booked execution is not offered again; the newer one still is.
+    assert [fill.execution_id for fill in broker.fetch_protection_fills("BTC/USDT", since=NOW)] == [
+        "102"
+    ]
+
+
+def test_mark_price_reads_the_leg_snapshot() -> None:
+    payload = [
+        {
+            "symbol": "BTCUSDT",
+            "positionSide": "LONG",
+            "positionAmt": "0.1",
+            "entryPrice": "30000",
+            "markPrice": "30123",
+            "leverage": "3",
+        }
+    ]
+    broker, _calls = build(lambda request: httpx.Response(200, json=payload))
+
+    assert broker.mark_price("BTC/USDT") == Decimal("30123")
+    assert broker.mark_price("ETH/USDT") is None
 
 
 def test_only_protection_orders_are_cancelled_when_a_leg_closes() -> None:

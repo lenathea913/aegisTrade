@@ -69,12 +69,18 @@ class FakeFills:
     def __init__(self, fills: tuple[VenueFill, ...] = ()) -> None:
         self.fills = fills
         self.requests: list[tuple[str, datetime | None]] = []
+        self.advanced: list[tuple[str, datetime, str]] = []
 
     def fetch_protection_fills(
         self, symbol: str, *, since: datetime | None = None
     ) -> tuple[VenueFill, ...]:
         self.requests.append((symbol, since))
         return self.fills
+
+    def advance_fill_cursor(
+        self, symbol: str, *, filled_at: datetime, execution_id: str = ""
+    ) -> None:
+        self.advanced.append((symbol, filled_at, execution_id))
 
 
 class FakeRecorder:
@@ -119,10 +125,11 @@ def build(
 def test_a_stop_fill_that_flattened_the_venue_is_booked_instead_of_halting() -> None:
     ledger = ledger_with("0.1")
     recorder = FakeRecorder()
+    fills = FakeFills((fill("0.1", "29400"),))
     reconciler, state = build(
         ledger,
         FakeVenue(()),  # the venue no longer holds anything: the stop fired
-        fills=FakeFills((fill("0.1", "29400"),)),
+        fills=fills,
         recorder=recorder,
     )
 
@@ -136,6 +143,8 @@ def test_a_stop_fill_that_flattened_the_venue_is_booked_instead_of_halting() -> 
     assert position.is_flat
     # The in-memory book must agree too, or the next pass would see the same gap.
     assert ledger.position("BTC/USDT").is_flat
+    # The watermark moves only after the write succeeded.
+    assert fills.advanced == [("BTC/USDT", NOW, "")]
 
 
 def test_a_partial_exit_is_booked_when_it_lands_on_the_venue_quantity() -> None:
@@ -156,11 +165,12 @@ def test_a_partial_exit_is_booked_when_it_lands_on_the_venue_quantity() -> None:
 
 def test_a_fill_that_does_not_explain_the_gap_stays_a_drift() -> None:
     recorder = FakeRecorder()
+    fills = FakeFills((fill("0.04", "29400"),))
     reconciler, state = build(
         ledger_with("0.1"),
         FakeVenue(()),
         # Only part of the exposure moved: the rest is still unexplained.
-        fills=FakeFills((fill("0.04", "29400"),)),
+        fills=fills,
         recorder=recorder,
     )
 
@@ -169,6 +179,8 @@ def test_a_fill_that_does_not_explain_the_gap_stays_a_drift() -> None:
     assert [drift.kind for drift in drifts] == ["missing_at_venue"]
     assert recorder.calls == []
     assert len(state.blocked) == 1
+    # Nothing was written, so the same fills must be readable next cycle.
+    assert fills.advanced == []
 
 
 def test_a_fill_larger_than_the_position_is_refused() -> None:

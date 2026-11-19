@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -65,6 +65,11 @@ _TESTNET_HOSTS = frozenset({"testnet.binancefuture.com"})
 _AUTH_STATUS = frozenset({401, 403})
 #: Order types that only ever close a leg; used to find our own exits on the venue.
 _PROTECTION_TYPES = frozenset({"STOP_MARKET", "TAKE_PROFIT_MARKET"})
+#: History page size (the venue maximum) and a bound on how many pages one lookup reads.
+_PAGE_LIMIT = 1000
+_MAX_PAGES = 10
+#: Re-read a little before the watermark: fills of one millisecond share a startTime.
+_CURSOR_OVERLAP = timedelta(seconds=2)
 #: "No need to change margin type" — already ISOLATED.
 _MARGIN_ALREADY_SET = -4046
 _STATUS_MAP: dict[str, OrderStatus] = {
@@ -122,6 +127,9 @@ class ProtectionFill:
     position_side: PositionSide | None = None
     fee: Decimal = Decimal("0")
     realized_pnl: Decimal = Decimal("0")
+    #: The venue's execution id (``userTrades.id``): stable across re-reads of the
+    #: same window, so a booked trade keeps one deterministic id.
+    execution_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -171,6 +179,10 @@ class BinanceFuturesTestnetBroker:
         #: symbol -> the leverage last sent to the venue (leverage is venue state).
         self._leverage_sent: dict[str, int] = {}
         self._margin_set: set[str] = set()
+        #: symbol -> (filled_at, execution id) of the newest *booked* protective fill.
+        #: Process-local on purpose: the durable floor stays the position's ``opened_at``,
+        #: and a restart re-reads from it rather than trusting a lost watermark.
+        self._fill_cursor: dict[str, tuple[datetime, int]] = {}
 
     # ------------------------------------------------------------- preparation
 
@@ -414,15 +426,24 @@ class BinanceFuturesTestnetBroker:
         explained: ``userTrades`` carries the executions and ``allOrders`` says which
         of them belong to a protective exit, so an ordinary reduce-by-hand at market
         is never mistaken for our stop.
+
+        The scan starts at the later of ``since`` and this process's watermark for the
+        symbol, and pages until a short page arrives. Both matter: a stop that fired in
+        two pieces is only explained if the earlier piece drops out of the window (a
+        fill already in the book would make the replay overshoot), and a history longer
+        than one page would otherwise look like "nothing explains this drift".
         """
         venue_symbol = to_exchange_symbol(symbol)
-        window: dict[str, str] = {"symbol": venue_symbol, "limit": "1000"}
-        if since is not None:
-            window["startTime"] = str(int(since.timestamp() * 1000))
+        cursor = self._fill_cursor.get(symbol)
+        start = since
+        if cursor is not None:
+            floor = cursor[0] - _CURSOR_OVERLAP
+            start = floor if start is None else max(start, floor)
+        window: dict[str, str] = {"symbol": venue_symbol, "limit": str(_PAGE_LIMIT)}
+        if start is not None:
+            window["startTime"] = str(int(start.timestamp() * 1000))
 
-        orders = self._request("GET", "/v1/allOrders", window)
-        if not isinstance(orders, list):
-            raise ExchangeError("exchange returned an unexpected all-orders payload")
+        orders = self._paged("/v1/allOrders", window, key="orderId", id_field="orderId")
         protection = {
             str(item.get("orderId")): item
             for item in orders
@@ -433,9 +454,7 @@ class BinanceFuturesTestnetBroker:
         if not protection:
             return ()
 
-        trades = self._request("GET", "/v1/userTrades", window)
-        if not isinstance(trades, list):
-            raise ExchangeError("exchange returned an unexpected user-trades payload")
+        trades = self._paged("/v1/userTrades", window, key="fromId", id_field="id")
 
         fills: list[ProtectionFill] = []
         for item in trades:
@@ -465,10 +484,29 @@ class BinanceFuturesTestnetBroker:
                         int(_decimal(item.get("time"))) / 1000, tz=UTC
                     ),
                     order_type=str(order.get("type", "")).upper(),
+                    execution_id=str(item.get("id", "")),
                 )
             )
-        fills.sort(key=lambda fill: fill.filled_at)
+        fills.sort(key=lambda fill: (fill.filled_at, _as_int(fill.execution_id)))
+        if cursor is not None:
+            fills = [fill for fill in fills if _after_cursor(fill, cursor)]
         return tuple(fills)
+
+    def advance_fill_cursor(
+        self, symbol: str, *, filled_at: datetime, execution_id: str = ""
+    ) -> None:
+        """Move the watermark to the newest protective fill that was written down."""
+        candidate = (filled_at, _as_int(execution_id))
+        current = self._fill_cursor.get(symbol)
+        if current is None or candidate > current:
+            self._fill_cursor[symbol] = candidate
+
+    def mark_price(self, symbol: str) -> Decimal | None:
+        """Current mark of ``symbol``, used to sanity-check a stop before re-arming it."""
+        for leg in self.fetch_positions():
+            if leg.symbol == symbol and leg.mark_price is not None:
+                return leg.mark_price
+        return None
 
     def cancel(self, exchange_order_id: str, *, symbol: str) -> ExchangeOrderState:
         payload = _as_object(
@@ -498,6 +536,48 @@ class BinanceFuturesTestnetBroker:
             self._client.close()
 
     # --------------------------------------------------------------- internals
+
+    def _paged(
+        self, path: str, window: dict[str, str], *, key: str, id_field: str
+    ) -> list[dict[str, Any]]:
+        """Read every page of a history endpoint.
+
+        ``orderId`` (orders) and ``fromId`` (trades) are inclusive, so the page after
+        the last id seen repeats it; duplicates are dropped here and the loop stops on
+        the first short page. ``_MAX_PAGES`` bounds a runaway account.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        page_cursor: str | None = None
+        for _ in range(_MAX_PAGES):
+            params = dict(window)
+            if page_cursor is not None:
+                params[key] = page_cursor
+            payload = self._request("GET", path, params)
+            if not isinstance(payload, list):
+                raise ExchangeError(f"exchange returned an unexpected payload on {path}")
+            fresh = 0
+            for item in payload:
+                if not isinstance(item, dict) or item.get(id_field) is None:
+                    continue
+                identifier = str(item[id_field])
+                if identifier in seen:
+                    continue
+                seen.add(identifier)
+                rows.append(item)
+                fresh += 1
+            ids = [
+                _as_int(str(item[id_field]))
+                for item in payload
+                if isinstance(item, dict) and item.get(id_field) is not None
+            ]
+            if len(payload) < _PAGE_LIMIT or fresh == 0 or not ids:
+                break
+            newest = str(max(ids))
+            if newest == page_cursor:  # pragma: no cover - defensive
+                break
+            page_cursor = newest
+        return rows
 
     def _signed_params(self, params: dict[str, str]) -> dict[str, str]:
         timestamp = str(int(utc_now().timestamp() * 1000))
@@ -578,6 +658,19 @@ def _side(raw: Any) -> Side | None:
 def _decimal_or_none(raw: Any) -> Decimal | None:
     value = _decimal(raw)
     return value if value > 0 else None
+
+
+def _as_int(raw: str) -> int:
+    """Venue ids are numeric strings; anything else sorts before every real id."""
+    return int(raw) if raw.isdigit() else -1
+
+
+def _after_cursor(fill: ProtectionFill, cursor: tuple[datetime, int]) -> bool:
+    """True when ``fill`` is newer than the newest execution already booked."""
+    moment, execution = cursor
+    if fill.filled_at != moment:
+        return fill.filled_at > moment
+    return _as_int(fill.execution_id) > execution
 
 
 def _state_from_payload(

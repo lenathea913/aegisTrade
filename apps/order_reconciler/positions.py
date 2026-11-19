@@ -24,7 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -40,6 +40,7 @@ __all__ = [
     "PositionDrift",
     "PositionReconciler",
     "VenueFill",
+    "VenueFillCursor",
     "VenueFillFeed",
     "VenueFillRecorder",
     "VenueLeg",
@@ -120,6 +121,9 @@ class VenueFill:
     filled_at: datetime
     fee: Decimal = _ZERO
     order_type: str = "STOP_MARKET"
+    #: The venue's execution id. It survives a re-read of the same window and is what
+    #: makes a booked trade id deterministic instead of positional.
+    execution_id: str = ""
 
 
 class VenuePositionFeed(Protocol):
@@ -136,6 +140,20 @@ class VenueFillFeed(Protocol):
         self, symbol: str, *, since: datetime | None = None
     ) -> Sequence[VenueFill]:
         """``STOP_MARKET``/``TAKE_PROFIT_MARKET`` executions, oldest first."""
+
+
+@runtime_checkable
+class VenueFillCursor(Protocol):
+    """How far the fill history has been *booked* for a symbol.
+
+    Advanced only after a successful write, never after a read: a fill that was found
+    but not recorded must be found again on the next pass.
+    """
+
+    def advance_fill_cursor(
+        self, symbol: str, *, filled_at: datetime, execution_id: str = ""
+    ) -> None:
+        """Remember that every execution up to this one has been booked."""
 
 
 class VenueFillRecorder(Protocol):
@@ -271,6 +289,14 @@ class PositionReconciler:
             return False
         for trade in trades:
             self._ledger.apply_trade(trade)
+        # The fills are durable now, so the next lookup may start after them. Advancing
+        # any earlier would hide a fill whose write failed.
+        cursor = self._fills if isinstance(self._fills, VenueFillCursor) else None
+        if cursor is not None and fills:
+            newest = fills[-1]
+            cursor.advance_fill_cursor(
+                drift.symbol, filled_at=newest.filled_at, execution_id=newest.execution_id
+            )
         self._logger.warning(
             "venue_fill_reconciled",
             symbol=drift.symbol,
@@ -386,7 +412,9 @@ def _plan_trades(
         scratch = scratch.apply_fill(signed, fill.price, leverage=position.leverage)
         trades.append(
             Trade(
-                trade_id=f"venue-{fill.order_id}-{index}"[:64],
+                # Deterministic per venue execution: re-reading the same window
+                # re-derives the same id, so a replay is a no-op instead of a duplicate.
+                trade_id=f"venue-{fill.execution_id or f'{fill.order_id}-{index}'}"[:64],
                 order_id=f"venue:{fill.order_id}",
                 symbol=position.symbol,
                 side=fill.side,

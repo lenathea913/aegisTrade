@@ -37,6 +37,10 @@ def crossover_prefix() -> tuple[Candle, ...]:
     candles: list[Candle] = []
     for index in range(398):
         step = Decimal("-0.001") if index < 320 else Decimal("0.0015")
+        if index >= 394:
+            # End on a cross for whatever EMA pair the strategy currently defaults to
+            # (3/5 during the stress test, 50/200 before it): dip three bars, then pop.
+            step = Decimal("-0.002") if index < 397 else Decimal("0.004")
         open_price = price
         close_price = price * (Decimal("1") + step)
         candles.append(

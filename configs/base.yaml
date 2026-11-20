@@ -47,11 +47,15 @@ market_data:
     - NEAR/USDT
     - 1000PEPE/USDT
     - HYPE/USDT
+  # STRESS TEST MODE (temporary): 15m bars so the runner, the protective exits and
+  # the Activity feed are exercised several times an hour instead of a few times a
+  # day. 15m is a supported venue interval, so nothing else has to change. Revert to
+  # `- 1h` (with the 50/200 EMA defaults) when the stress test is over.
   timeframes:
-    - 1h
+    - 15m
   # Freshness budget for risk rule 8. null derives it per timeframe from
   # timeframe_duration + collector_interval_seconds + stale_tolerance_seconds
-  # (1h -> 3720 s), so a legitimately closed hourly bar is never called stale.
+  # (15m -> 1020 s), so a legitimately closed bar is never called stale.
   stale_after_seconds: null
   collector_interval_seconds: 60
   stale_tolerance_seconds: 60

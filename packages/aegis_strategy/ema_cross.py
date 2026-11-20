@@ -25,12 +25,18 @@ _HUNDRED = Decimal("100")
 
 
 class EmaCrossParams(BaseModel):
-    """Tunables. Percentages are percent units (``2`` = 2 %)."""
+    """Tunables. Percentages are percent units (``2`` = 2 %).
+
+    The defaults are set for the temporary **stress test**: a 3/5 EMA on 15m bars
+    fires constantly, which is the point — it drives the execution path, the stop and
+    target monitor and the Activity feed hard. It is not a strategy to trade: revert
+    to 50/200 with the ADX floor at 25 before the numbers mean anything.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    fast_period: int = Field(default=50, ge=2, le=200)
-    slow_period: int = Field(default=200, ge=3, le=500)
+    fast_period: int = Field(default=3, ge=2, le=200)
+    slow_period: int = Field(default=5, ge=3, le=500)
     qty: PositiveDecimal = Decimal("0.1")
     stop_loss_pct: Decimal = Field(default=Decimal("2"), gt=0, lt=100)
     take_profit_pct: Decimal = Field(default=Decimal("4"), gt=0, le=1000)
@@ -39,9 +45,10 @@ class EmaCrossParams(BaseModel):
     adx_period: int = Field(default=14, ge=2, le=100)
     #: Refuse to enter unless ADX is at least this value. A cross in a market below
     #: ~25 is usually noise: price is oscillating, not trending, and the strategy pays
-    #: the spread and fees for a move that reverses. ``None`` disables the filter, which
-    #: is what a baseline comparison run needs.
-    adx_threshold: Decimal | None = Field(default=Decimal("25"), ge=0, le=100)
+    #: the spread and fees for a move that reverses. ``0`` (the stress-test default)
+    #: lets every cross through; ``None`` disables the filter entirely, which is what a
+    #: baseline comparison run needs. Put this back to 25 with the 50/200 defaults.
+    adx_threshold: Decimal | None = Field(default=Decimal("0"), ge=0, le=100)
 
     @model_validator(mode="after")
     def _fast_must_be_shorter(self) -> Self:

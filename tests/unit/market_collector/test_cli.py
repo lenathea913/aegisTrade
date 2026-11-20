@@ -56,7 +56,7 @@ def test_dev_settings_also_use_the_live_source() -> None:
     settings = load_settings("dev")
 
     assert isinstance(build_source_for(settings), BinanceKlineSource)
-    assert settings.market_data.timeframes == (Timeframe.H1,)
+    assert settings.market_data.timeframes == (Timeframe.M15,)
 
 
 def test_collector_is_built_from_settings() -> None:

@@ -1,10 +1,14 @@
 """Compare one EMA 12/26 backtest at 1x (spot-equivalent) against leveraged futures.
 
-The question this answers is narrow and worth stating: *given the same signals, costs and
-starting equity, does leverage turn this strategy into a liquidation machine?* The
-strategy's quantity is treated as the margin committed at 1x, so at 3x the same
-collateral carries three times the notional; PnL, fees and funding scale with it and the
-estimated isolated-margin liquidation price moves to ``entry * (1 -/+ 1/leverage +/- 0.5%)``.
+The question this answers is narrow and worth stating: *given the same costs and starting
+equity, which EMA pair survives this market, and does leverage help or does it just make
+the bad runs bigger?* The strategy's quantity is treated as the margin committed at 1x,
+so at 3x the same collateral carries three times the notional; PnL, fees and funding
+scale with it and the estimated isolated-margin liquidation price moves to
+``entry * (1 -/+ 1/leverage +/- 0.5%)``.
+
+Every EMA pair is run over the same bars with the same costs, so the only thing that
+differs between rows is the strategy (and the leverage column).
 
 Data comes from the committed seed CSV (1500 hourly bars) or, with ``--from-db``, from
 ``market.candles`` for the configured database.
@@ -13,6 +17,8 @@ Usage:
     python scripts/run_futures_backtest.py                 # seed data, 1x vs 3x
     python scripts/run_futures_backtest.py --from-db       # stored candles, 1x vs 3x
     python scripts/run_futures_backtest.py --leverage 1 --leverage 5
+    python scripts/run_futures_backtest.py --from-db \
+        --ema 12/26 --ema 3/5 --ema 9/21 --ema 50/200
 """
 
 from __future__ import annotations
@@ -75,13 +81,25 @@ def _load_from_database(symbol: str, timeframe: Timeframe, environment: str) -> 
         engine.dispose()
 
 
-def _describe(result: BacktestResult, leverage: int) -> dict[str, str]:
+def _parse_ema(raw: str) -> tuple[int, int]:
+    """``fast/slow`` (e.g. ``9/21``) into a pair the parameters accept."""
+    try:
+        fast, slow = (int(part) for part in raw.split("/", 1))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected FAST/SLOW, got {raw!r}") from exc
+    if fast >= slow:
+        raise argparse.ArgumentTypeError(f"fast period must be shorter than slow in {raw!r}")
+    return fast, slow
+
+
+def _describe(result: BacktestResult, ema: tuple[int, int], leverage: int) -> dict[str, str]:
     metrics = result.metrics
     initial = result.config.initial_equity
     total_return = (result.final_equity / initial - Decimal("1")) * Decimal("100")
     profit_factor = "n/a" if metrics.profit_factor is None else f"{metrics.profit_factor:.2f}"
     sharpe = "n/a" if metrics.sharpe is None else f"{metrics.sharpe:.2f}"
     return {
+        "ema": f"{ema[0]}/{ema[1]}",
         "leverage": f"{leverage}x",
         "trades": str(metrics.total_trades),
         "liquidations": str(result.liquidations),
@@ -129,6 +147,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="leverages",
         help="leverage to run (repeatable); defaults to 1 and 3",
     )
+    parser.add_argument(
+        "--ema",
+        type=_parse_ema,
+        action="append",
+        dest="emas",
+        help="EMA fast/slow pair to run (repeatable), e.g. --ema 9/21; defaults to the "
+        "strategy's own parameters",
+    )
     parser.add_argument("--taker-fee-bps", type=Decimal, default=Decimal("5"))
     parser.add_argument("--slippage-bps", type=Decimal, default=Decimal("5"))
     parser.add_argument("--funding-bps-per-8h", type=Decimal, default=Decimal("1"))
@@ -151,26 +177,26 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     leverages = args.leverages or [1, 3]
+    default_params = EmaCrossParams()
+    emas = args.emas or [(default_params.fast_period, default_params.slow_period)]
     rows: list[dict[str, str]] = []
-    results: list[BacktestResult] = []
-    for leverage in leverages:
-        # Same signals, same quantity, same costs: only leverage and its margin differ.
-        strategy = EmaCrossStrategy(
-            symbol=args.symbol,
-            timeframe=timeframe,
-            params=EmaCrossParams(qty=Decimal("0.05")),
-        )
-        config = BacktestConfig(
-            initial_equity=args.equity,
-            taker_fee_bps=args.taker_fee_bps,
-            slippage_bps=args.slippage_bps,
-            funding_rate_bps_per_8h=args.funding_bps_per_8h,
-            allow_short=not args.no_short,
-            leverage=leverage,
-        )
-        result = run(strategy, candles, config)
-        results.append(result)
-        rows.append(_describe(result, leverage))
+    runs: list[tuple[tuple[int, int], int, BacktestResult]] = []
+    for ema in emas:
+        for leverage in leverages:
+            # Same bars, same quantity, same costs: only the EMA pair and leverage differ.
+            params = EmaCrossParams(fast_period=ema[0], slow_period=ema[1], qty=Decimal("0.05"))
+            strategy = EmaCrossStrategy(symbol=args.symbol, timeframe=timeframe, params=params)
+            config = BacktestConfig(
+                initial_equity=args.equity,
+                taker_fee_bps=args.taker_fee_bps,
+                slippage_bps=args.slippage_bps,
+                funding_rate_bps_per_8h=args.funding_bps_per_8h,
+                allow_short=not args.no_short,
+                leverage=leverage,
+            )
+            result = run(strategy, candles, config)
+            runs.append((ema, leverage, result))
+            rows.append(_describe(result, ema, leverage))
 
     print(f"data            : {len(candles)} bars of {args.symbol} {timeframe} from {source}")
     print(
@@ -187,17 +213,18 @@ def main(argv: list[str] | None = None) -> int:
     _print_table(rows)
     print()
 
-    for leverage, result in zip(leverages, results, strict=True):
+    for ema, leverage, result in runs:
         liquidated = [trade for trade in result.trades if trade.exit_reason.value == "liquidated"]
+        label = f"EMA {ema[0]}/{ema[1]} @ {leverage}x"
         if liquidated:
             first = liquidated[0]
             print(
-                f"{leverage}x: {len(liquidated)} liquidation(s); first at "
+                f"{label}: {len(liquidated)} liquidation(s); first at "
                 f"{first.exit_time:%Y-%m-%d %H:%M} UTC, exit {first.exit_price:.2f} "
                 f"({first.net_pnl:.2f})"
             )
         else:
-            print(f"{leverage}x: no liquidation - every exit was a stop, target or signal")
+            print(f"{label}: no liquidation - every exit was a stop, target or signal")
 
     print()
     print("Liquidation prices are the simplified isolated-margin estimate")

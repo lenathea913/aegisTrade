@@ -10,7 +10,7 @@ from typing import Any, cast
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from aegis_config import load_settings
+from aegis_config import MarketType, load_settings
 from aegis_core import (
     TRADER_MOTIVATION_QUOTE,
     Candle,
@@ -20,6 +20,7 @@ from aegis_core import (
     Timeframe,
     Trade,
 )
+from aegis_db import ActivityRecord
 from aegis_ledger import AuditEvent, PortfolioLedger
 from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
@@ -80,6 +81,13 @@ def crossover_prefix() -> tuple[Candle, ...]:
     if strategy.on_candle(window[-1], window) is None:
         raise AssertionError("fixture produced no crossover in the trailing window")
     return candles
+
+
+class EmptyActivity:
+    """The activity page reads the feed, not the trading repository."""
+
+    def recent(self, limit: int) -> tuple[ActivityRecord, ...]:
+        return ()
 
 
 class Repo:
@@ -166,6 +174,27 @@ def test_pages_render_dark_dashboard() -> None:
     assert positions.status_code == 200 and "No open positions" in positions.text
     assert journal.status_code == 200 and "append-only" in journal.text
     assert signals.status_code == 200 and "Scan candles" in signals.text
+
+
+def test_the_market_badge_follows_the_configuration_on_every_page() -> None:
+    """A page that forgets ``health`` used to fall back to the template's "spot"."""
+    base = load_settings("paper")
+    futures = base.model_copy(
+        update={"execution": base.execution.model_copy(update={"market_type": MarketType.FUTURES})}
+    )
+    service = ApiService(
+        settings=futures,
+        repository=EmptyRepository(),
+        ledger=PortfolioLedger(initial_equity=Decimal("10000")),
+        clock=lambda: NOW,
+    )
+    client = TestClient(create_app(settings=futures, service=service, activity=EmptyActivity()))
+
+    for path in ("/", "/positions", "/journal", "/activity"):
+        page = client.get(path, headers={"accept": "text/html"})
+        assert page.status_code == 200, path
+        assert "FUTURES" in page.text, path
+        assert "bg-indigo-500/20" in page.text, path
 
 
 def test_partials_serve_htmx_polling() -> None:

@@ -289,11 +289,18 @@ def create_app(
         metrics.set_entries_halted(bool(_ledger_status().get("halted")))
 
     def _render(request: Request, name: str, context: dict[str, Any]) -> Response:
-        """Render a template with the exchange and ledger badges always in scope."""
+        """Render a template with the header badges always in scope.
+
+        ``health`` belongs here, not in individual routes: the header reads the
+        environment and the spot/futures badge from it, and a page that forgot to pass
+        it silently rendered the template's "spot" fallback. ``service.health()`` is
+        cached for 30 s, so adding it to every page costs one probe per window.
+        """
         return templates.TemplateResponse(
             request,
             name,
             {
+                "health": service.health(),
                 "exchange": service.exchange_status(),
                 "ledger_status": _ledger_status(),
                 **context,

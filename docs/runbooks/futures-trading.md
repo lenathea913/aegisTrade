@@ -129,6 +129,24 @@ PYTHONPATH="packages;apps" uv run python scripts/run_futures_backtest.py
 PYTHONPATH="packages;apps" uv run python scripts/run_futures_backtest.py --from-db --leverage 1 --leverage 3
 ```
 
+### Collecting a year of history
+
+The collector only fetches the latest page (1 000 bars), which keeps a live series
+current but cannot feed a multi-month backtest. `scripts/backfill_candles.py` pages
+backwards through the same klines format, anchoring each request one millisecond before
+the oldest bar already received, and writes through the collector's idempotent upsert:
+
+```bash
+# 10 000 hourly bars (~14 months) of the USDT-M contract, from the futures testnet host
+PYTHONPATH="packages;apps" uv run python scripts/backfill_candles.py --target 10500
+```
+
+The default host is `testnet.binancefuture.com` (`/fapi/v1/klines`) because the spot
+testnet keeps only a few weeks of history and the futures contract is what the backtest
+trades. Re-running is free: existing bars are skipped, never duplicated. Note that the
+running collector still writes *spot* testnet klines into the same series, so recent
+bars may differ from the futures history by a fraction of a percent.
+
 `BacktestResult.liquidations` (alias `total_liquidations`) counts the forced exits, so a
 run tells you directly whether the stop was ever reached before the collateral.
 

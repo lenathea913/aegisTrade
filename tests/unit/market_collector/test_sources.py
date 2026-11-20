@@ -184,6 +184,34 @@ def test_binance_malformed_row_is_rejected() -> None:
         source.fetch("BTC/USDT", Timeframe.H1, 1)
 
 
+def test_binance_sends_end_time_so_a_backfill_can_page_backwards() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[KLINE])
+
+    anchor = datetime(2024, 1, 1, tzinfo=UTC)
+    with BinanceKlineSource(client=make_client(handler)) as source:
+        source.fetch("BTC/USDT", Timeframe.H1, 1000, end_time=anchor)
+
+    assert requests[0].url.params["endTime"] == str(int(anchor.timestamp() * 1000))
+    assert requests[0].url.params["limit"] == "1000"
+
+
+def test_binance_uses_the_configured_klines_path() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[KLINE])
+
+    with BinanceKlineSource(client=make_client(handler), klines_path="/fapi/v1/klines") as source:
+        source.fetch("BTC/USDT", Timeframe.H1, 1)
+
+    assert requests[0].url.path == "/fapi/v1/klines"
+
+
 def test_binance_does_not_close_a_client_it_does_not_own() -> None:
     client = make_client(lambda _: httpx.Response(200, json=[]))
     source = BinanceKlineSource(client=client)

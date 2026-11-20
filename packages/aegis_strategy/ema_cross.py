@@ -27,8 +27,8 @@ class EmaCrossParams(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    fast_period: int = Field(default=3, ge=2, le=200)
-    slow_period: int = Field(default=5, ge=3, le=500)
+    fast_period: int = Field(default=9, ge=2, le=200)
+    slow_period: int = Field(default=21, ge=3, le=500)
     qty: PositiveDecimal = Decimal("0.1")
     stop_loss_pct: Decimal = Field(default=Decimal("2"), gt=0, lt=100)
     take_profit_pct: Decimal = Field(default=Decimal("4"), gt=0, le=1000)
@@ -52,6 +52,13 @@ class EmaCrossStrategy(StrategyBase):
         self.symbol = normalise_symbol(symbol)
         self.timeframe = timeframe
         self.params = params or EmaCrossParams()
+        # Memoised EMA per period. Recomputing the average over the whole history on
+        # every bar is quadratic: fine for 500 bars, minutes for 11 000. The cache
+        # holds only the last scalar and the bar count, never the history itself, and
+        # it is reused only when the same series simply grew by one bar; anything
+        # else (a new run, a different series) falls back to a fresh computation, so
+        # the values are identical to recalculating from scratch.
+        self._ema_cache: dict[int, tuple[int, Decimal, Decimal]] = {}
 
     @property
     def strategy_id(self) -> str:
@@ -69,18 +76,28 @@ class EmaCrossStrategy(StrategyBase):
             return None
 
         closes = [bar.close for bar in history]
-        previous = closes[:-1]
 
-        fast_now = ema(closes, self.params.fast_period)
-        slow_now = ema(closes, self.params.slow_period)
-        fast_prev = ema(previous, self.params.fast_period)
-        slow_prev = ema(previous, self.params.slow_period)
+        fast_prev, fast_now = self._ema_values(closes, self.params.fast_period)
+        slow_prev, slow_now = self._ema_values(closes, self.params.slow_period)
 
         if fast_prev <= slow_prev and fast_now > slow_now:
             return self._intent(candle, Side.BUY, "crossed above")
         if fast_prev >= slow_prev and fast_now < slow_now:
             return self._intent(candle, Side.SELL, "crossed below")
         return None
+
+    def _ema_values(self, closes: Sequence[Decimal], period: int) -> tuple[Decimal, Decimal]:
+        """``(previous, current)`` EMA over ``closes``; incremental when it can be."""
+        alpha = Decimal(2) / Decimal(period + 1)
+        cached = self._ema_cache.get(period)
+        if cached is not None and cached[0] == len(closes) - 1 and cached[1] == closes[-2]:
+            previous = cached[2]
+            current = closes[-1] * alpha + previous * (Decimal(1) - alpha)
+        else:
+            current = ema(closes, period)
+            previous = ema(closes[:-1], period) if len(closes) > period else current
+        self._ema_cache[period] = (len(closes), closes[-1], current)
+        return previous, current
 
     def _intent(self, candle: Candle, side: Side, event: str) -> OrderIntent:
         entry = candle.close

@@ -97,10 +97,15 @@ class BinanceKlineSource:
         self,
         *,
         base_url: str = "https://api.binance.com",
+        klines_path: str = "/api/v3/klines",
         client: httpx.Client | None = None,
         timeout_seconds: float = 10.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        # Spot uses ``/api/v3/klines``; USDT-M futures use ``/fapi/v1/klines``. The
+        # path is a parameter so a futures backfill reads the contract it trades
+        # instead of spot prices that merely look similar.
+        self._klines_path = klines_path
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout_seconds)
 
@@ -122,14 +127,29 @@ class BinanceKlineSource:
     def exchange_symbol(symbol: str) -> str:
         return symbol.replace("/", "").replace("-", "").upper()
 
-    def fetch(self, symbol: str, timeframe: Timeframe, limit: int) -> Sequence[Candle]:
+    def fetch(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        limit: int,
+        *,
+        end_time: datetime | None = None,
+    ) -> Sequence[Candle]:
+        """Latest closed candles, or those at/before ``end_time`` when given.
+
+        ``end_time`` is what makes pagination possible: each page is anchored just
+        before the oldest bar already received, so a caller can walk backwards
+        through months of history without overlap or gaps.
+        """
         params: dict[str, str | int] = {
             "symbol": self.exchange_symbol(symbol),
             "interval": _BINANCE_INTERVALS[timeframe],
             "limit": max(1, min(limit, 1000)),
         }
+        if end_time is not None:
+            params["endTime"] = int(end_time.timestamp() * 1000)
         try:
-            response = self._client.get(f"{self._base_url}/api/v3/klines", params=params)
+            response = self._client.get(f"{self._base_url}{self._klines_path}", params=params)
             response.raise_for_status()
             payload = response.json()
         except httpx.HTTPError as exc:

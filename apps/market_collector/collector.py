@@ -19,7 +19,7 @@ from market_collector.store import CandleWriter
 
 __all__ = ["CollectionSummary", "MarketCollector", "SeriesResult"]
 
-DEFAULT_LIMIT = 500
+DEFAULT_LIMIT = 1000
 
 
 @dataclass(frozen=True)

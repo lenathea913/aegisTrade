@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from aegis_config import Settings, load_settings
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
 from aegis_observability import configure_logging, get_logger
-from market_collector.collector import CollectionSummary, MarketCollector
+from market_collector.collector import DEFAULT_LIMIT, CollectionSummary, MarketCollector
 from market_collector.retry import RetryPolicy
 from market_collector.sources import (
     BINANCE_MAINNET_BASE_URL,
@@ -71,7 +71,7 @@ def build_collector(
         timeframes=settings.market_data.timeframes,
         exchange=settings.market_data.exchange,
         environment=settings.exchange.environment,
-        limit=limit or 500,
+        limit=limit or DEFAULT_LIMIT,
         retry=retry,
     )
 

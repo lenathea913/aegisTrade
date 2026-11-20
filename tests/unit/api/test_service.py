@@ -179,7 +179,19 @@ def test_budget_of_a_flat_account() -> None:
     assert Decimal(budget.leverage) == Decimal("0")
     assert budget.open_positions == 0
     assert budget.kill_switch is False
-    assert budget.limits.allowed_symbols == ["BTC/USDT"]
+    assert budget.limits.allowed_symbols == [
+        "1000PEPE/USDT",
+        "BNB/USDT",
+        "BTC/USDT",
+        "DOGE/USDT",
+        "ETH/USDT",
+        "HYPE/USDT",
+        "NEAR/USDT",
+        "SOL/USDT",
+        "XRP/USDT",
+        "ZEC/USDT",
+    ]
+    assert budget.limits.max_open_positions == 3
     assert Decimal(budget.limits.max_risk_per_trade_pct) == Decimal("0.5")
 
 

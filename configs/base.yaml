@@ -31,8 +31,22 @@ market_data:
   # are the same live source). Anything else fails loudly at startup.
   source: binance
   csv_dir: data/seeds
+  # Top 10 USDT-M perpetuals by 30-day quote volume (measured 2026-11-20 from the
+  # mainnet kline archives), limited to contracts the futures *testnet* actually
+  # lists. The six loudest contracts of that ranking (SOXL, SNDK, XAU, SKHYNIX,
+  # SPCX, NVDA) are tokenised equity/commodity perps with no testnet listing, so
+  # they cannot be traded here and are absent on purpose.
   symbols:
     - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+    - ZEC/USDT
+    - XRP/USDT
+    - BNB/USDT
+    - DOGE/USDT
+    - NEAR/USDT
+    - 1000PEPE/USDT
+    - HYPE/USDT
   timeframes:
     - 1h
   # Freshness budget for risk rule 8. null derives it per timeframe from
@@ -54,9 +68,22 @@ risk:
     max_weekly_loss_pct: 5
     max_exposure_per_symbol_pct: 20
     max_total_exposure_pct: 60
+    # 60 % total / 20 % per symbol = three concurrent ideas. Without this cap a
+    # ten-symbol scan would keep opening positions until the total cap rejected the
+    # order, and *which* symbols got in would depend on scan order.
+    max_open_positions: 3
     max_leverage: 1
     allowed_symbols:
       - BTC/USDT
+      - ETH/USDT
+      - SOL/USDT
+      - ZEC/USDT
+      - XRP/USDT
+      - BNB/USDT
+      - DOGE/USDT
+      - NEAR/USDT
+      - 1000PEPE/USDT
+      - HYPE/USDT
 
 exchange:
   id: binance

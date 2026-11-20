@@ -53,9 +53,10 @@ def test_gate_takes_limits_and_staleness_from_settings(
         settings.market_data.timeframes[0]
     )
 
-    # paper config allows only BTC/USDT, so an ETH intent is refused by the gate.
-    eth = small_intent.model_copy(update={"symbol": "ETH/USDT"})
-    decision = gate.evaluate(eth, portfolio, market)
+    # paper config allows the top-volume universe only, so an off-list intent is
+    # refused by the gate.
+    off_list = small_intent.model_copy(update={"symbol": "AVAX/USDT"})
+    decision = gate.evaluate(off_list, portfolio, market)
     assert decision.approved is False
     assert any(r.startswith(RejectReason.SYMBOL_NOT_ALLOWED.value) for r in decision.reasons)
 

@@ -127,7 +127,19 @@ def test_risk_budget_endpoint() -> None:
     body = response.json()
     assert body["equity"] == "10000"
     assert body["limits"]["max_leverage"] == "1"
-    assert body["limits"]["allowed_symbols"] == ["BTC/USDT"]
+    assert body["limits"]["allowed_symbols"] == [
+        "1000PEPE/USDT",
+        "BNB/USDT",
+        "BTC/USDT",
+        "DOGE/USDT",
+        "ETH/USDT",
+        "HYPE/USDT",
+        "NEAR/USDT",
+        "SOL/USDT",
+        "XRP/USDT",
+        "ZEC/USDT",
+    ]
+    assert body["limits"]["max_open_positions"] == 3
     # The equity gauge is updated for Prometheus scrapes.
     assert metrics.value("aegis_ledger_equity") == 10000.0
 

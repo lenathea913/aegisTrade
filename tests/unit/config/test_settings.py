@@ -96,7 +96,10 @@ def test_risk_limits_are_shared_with_the_domain() -> None:
     limits = load_settings("paper").risk.limits
     assert limits.max_daily_loss_pct == 2
     assert limits.allows("btc/usdt") is True
-    assert limits.allows("ETH/USDT") is False
+    assert limits.allows("ETH/USDT") is True
+    # The universe is the top-volume list from base.yaml; anything outside it is denied.
+    assert limits.allows("AVAX/USDT") is False
+    assert limits.max_open_positions == 3
 
 
 def test_all_overlays_define_the_same_sections() -> None:

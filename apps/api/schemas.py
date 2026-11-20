@@ -117,6 +117,7 @@ class LimitsResponse(BaseModel):
     max_weekly_loss_pct: str
     max_exposure_per_symbol_pct: str
     max_total_exposure_pct: str
+    max_open_positions: int
     max_leverage: str
     allowed_symbols: list[str]
 

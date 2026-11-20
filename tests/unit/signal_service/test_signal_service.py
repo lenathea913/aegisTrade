@@ -129,23 +129,22 @@ def test_generation_produces_a_risk_checked_signal() -> None:
     assert signal.expires_at == signal.created_at + timedelta(hours=1)
     assert signal.market_context["bars"] == DEFAULT_HISTORY_BARS
     assert service.get(signal.signal_id).signal_id == signal.signal_id
+    # Signal strength travels with the idea so the runner can rank it against the
+    # other symbols firing in the same scan.
+    assert float(signal.market_context["adx"]) >= 25
+    assert float(signal.market_context["ema_distance_pct"]) > 0
 
 
-def test_generation_marks_a_risky_signal_blocked() -> None:
-    service, _, _ = build_service(
-        risk_gate=gate(
-            max_exposure_per_symbol_pct=Decimal("5"), max_total_exposure_pct=Decimal("6")
-        )
-    )
+def test_generation_marks_a_signal_refused_by_the_gate_blocked() -> None:
+    # Sizing now fits itself inside the exposure caps, so the clean way to make the
+    # preview fail is a limit the framing cannot satisfy: the symbol allow-list.
+    service, _, _ = build_service(risk_gate=gate(allowed_symbols=frozenset()))
 
     signals = service.generate()
 
     assert len(signals) == 1
     assert signals[0].status is SignalStatus.BLOCKED_BY_RISK
-    assert any(
-        reason.startswith("max_exposure_per_symbol_exceeded")
-        for reason in signals[0].status_reasons
-    )
+    assert any(reason.startswith("symbol_not_allowed") for reason in signals[0].status_reasons)
 
 
 def test_no_signal_without_candles() -> None:
@@ -275,6 +274,22 @@ def test_conversion_derives_leverage_from_the_stop_distance() -> None:
     assert conversion.intent.qty * entry <= 10000 * conversion.intent.leverage
 
 
+def test_sizing_stays_inside_the_exposure_caps() -> None:
+    """20 % per symbol is a cap on the order, not a limit it trips over."""
+    service, _, _ = build_service(
+        risk_gate=gate(
+            max_exposure_per_symbol_pct=Decimal("20"), max_total_exposure_pct=Decimal("60")
+        )
+    )
+
+    conversion = service.convert(service.generate()[0].signal_id)
+
+    entry = conversion.intent.price
+    assert entry is not None
+    assert conversion.intent.qty * entry <= Decimal("2000")
+    assert conversion.decision.approved is True
+
+
 def test_spot_limits_keep_every_intent_at_one_x() -> None:
     service, _, _ = build_service()  # RiskLimit defaults to max_leverage 1
 
@@ -293,11 +308,7 @@ def test_converting_twice_is_refused() -> None:
 
 
 def test_blocked_signal_cannot_be_converted() -> None:
-    service, _, _ = build_service(
-        risk_gate=gate(
-            max_exposure_per_symbol_pct=Decimal("5"), max_total_exposure_pct=Decimal("6")
-        )
-    )
+    service, _, _ = build_service(risk_gate=gate(allowed_symbols=frozenset()))
     signal = service.generate()[0]
 
     # Conversion re-runs the gate; a blocked signal is refused there, not by state.

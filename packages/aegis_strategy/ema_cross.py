@@ -75,10 +75,25 @@ class EmaCrossStrategy(StrategyBase):
         self._adx = AdxTracker(self.params.adx_period)
         self._adx_seen = 0
         self._adx_last_time: datetime | None = None
+        #: Strength of the most recent cross, recorded so the caller can rank several
+        #: simultaneous signals instead of guessing from the ticker. ``None`` when the
+        #: index had not warmed up at that bar.
+        self._last_adx: Decimal | None = None
+        self._last_ema_distance_pct: Decimal | None = None
 
     @property
     def strategy_id(self) -> str:
         return "simple_ema_cross"
+
+    @property
+    def last_adx(self) -> Decimal | None:
+        """ADX at the bar of the last cross this strategy produced."""
+        return self._last_adx
+
+    @property
+    def last_ema_distance_pct(self) -> Decimal | None:
+        """How far the close sat beyond the slow EMA at that cross, in percent units."""
+        return self._last_ema_distance_pct
 
     @property
     def warmup_bars(self) -> int:
@@ -91,23 +106,27 @@ class EmaCrossStrategy(StrategyBase):
         if candle.symbol != self.symbol:
             return None
 
-        closes = [bar.close for bar in history]
-
-        fast_prev, fast_now = self._ema_values(closes, self.params.fast_period)
-        slow_prev, slow_now = self._ema_values(closes, self.params.slow_period)
+        fast_prev, fast_now = self._ema_values(history, self.params.fast_period)
+        slow_prev, slow_now = self._ema_values(history, self.params.slow_period)
 
         if fast_prev <= slow_prev and fast_now > slow_now:
             side, event = Side.BUY, "crossed above"
         elif fast_prev >= slow_prev and fast_now < slow_now:
             side, event = Side.SELL, "crossed below"
         else:
+            self._last_adx = None
+            self._last_ema_distance_pct = None
             return None
 
-        if not self._trend_strong_enough(history):
+        # Measure the cross before deciding: these two numbers are what makes one
+        # signal comparable with another when several fire in the same scan.
+        self._last_adx = self._adx_value(history)
+        self._last_ema_distance_pct = (candle.close - slow_now) / slow_now * _HUNDRED
+        if not self._trend_strong_enough(self._last_adx):
             return None
         return self._intent(candle, side, event)
 
-    def _trend_strong_enough(self, history: Sequence[Candle]) -> bool:
+    def _trend_strong_enough(self, value: Decimal | None) -> bool:
         """Whether ADX clears the configured floor at this bar.
 
         An index that does not exist yet (fewer than two ADX periods) cannot veto an
@@ -115,7 +134,6 @@ class EmaCrossStrategy(StrategyBase):
         *filter* has not warmed up would silently delete the first few crosses.
         """
         threshold = self.params.adx_threshold
-        value = self._adx_value(history)
         if threshold is None or value is None:
             return True
         return value >= threshold
@@ -137,17 +155,25 @@ class EmaCrossStrategy(StrategyBase):
         self._adx_last_time = history[-1].close_time
         return self._adx.value
 
-    def _ema_values(self, closes: Sequence[Decimal], period: int) -> tuple[Decimal, Decimal]:
-        """``(previous, current)`` EMA over ``closes``; incremental when it can be."""
+    def _ema_values(self, history: Sequence[Candle], period: int) -> tuple[Decimal, Decimal]:
+        """``(previous, current)`` EMA over the closes in ``history``.
+
+        The steady state is one multiplication: the cache holds the last close and the
+        EMA it produced, so a series that simply grew by a bar never rebuilds the close
+        list. Building it on every bar made a three-year, 27 000-bar replay quadratic —
+        hundreds of millions of Decimal reads for numbers that had not changed.
+        """
         alpha = Decimal(2) / Decimal(period + 1)
         cached = self._ema_cache.get(period)
-        if cached is not None and cached[0] == len(closes) - 1 and cached[1] == closes[-2]:
+        if cached is not None and cached[0] == len(history) - 1 and cached[1] == history[-2].close:
             previous = cached[2]
-            current = closes[-1] * alpha + previous * (Decimal(1) - alpha)
+            close = history[-1].close
+            current = close * alpha + previous * (Decimal(1) - alpha)
         else:
+            closes = [bar.close for bar in history]
             current = ema(closes, period)
             previous = ema(closes[:-1], period) if len(closes) > period else current
-        self._ema_cache[period] = (len(closes), closes[-1], current)
+        self._ema_cache[period] = (len(history), history[-1].close, current)
         return previous, current
 
     def _intent(self, candle: Candle, side: Side, event: str) -> OrderIntent:

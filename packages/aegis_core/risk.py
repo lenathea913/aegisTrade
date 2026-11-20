@@ -13,7 +13,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Self
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from aegis_core.base import StrictModel
 from aegis_core.leverage import MAX_LEVERAGE
@@ -39,6 +39,11 @@ class RiskLimit(StrictModel):
     max_weekly_loss_pct: Percent = Decimal("5")
     max_exposure_per_symbol_pct: ExposurePercent = Decimal("20")
     max_total_exposure_pct: ExposurePercent = Decimal("60")
+    #: How many positions the book may hold at once. With 20 % per symbol and 60 %
+    #: total this is what actually stops a ten-symbol universe from turning every
+    #: scan into ten concurrent bets: the caps alone would allow three, and a fourth
+    #: idea would be sized to zero rather than judged.
+    max_open_positions: int = Field(default=3, ge=1, le=50)
     #: Ceiling for ``OrderIntent.leverage``; the domain cap always wins.
     max_leverage: LeverageDecimal = Decimal("1")
     allowed_symbols: frozenset[SymbolStr] = frozenset()

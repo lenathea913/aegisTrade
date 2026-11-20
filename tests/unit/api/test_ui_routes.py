@@ -242,9 +242,7 @@ def test_signal_api_lifecycle() -> None:
 
 
 def test_conversion_of_a_blocked_signal_returns_400_with_reasons() -> None:
-    tight = RiskGate(
-        limits=limits(max_exposure_per_symbol_pct=Decimal("5"), max_total_exposure_pct=Decimal("6"))
-    )
+    tight = RiskGate(limits=limits(allowed_symbols=frozenset()))
     client, signals = build_client(risk_gate=tight)
 
     generated = client.post("/api/signals/generate").json()["signals"][0]

@@ -30,6 +30,8 @@ class RejectReason(StrEnum):
     WEEKLY_LOSS_LIMIT_REACHED = "weekly_loss_limit_reached"
     MAX_TOTAL_EXPOSURE_EXCEEDED = "max_total_exposure_exceeded"
     MAX_SYMBOL_EXPOSURE_EXCEEDED = "max_exposure_per_symbol_exceeded"
+    #: The book already holds ``max_open_positions`` ideas; a new one has no slot.
+    MAX_OPEN_POSITIONS_REACHED = "max_open_positions_reached"
     MAX_LEVERAGE_EXCEEDED = "max_leverage_exceeded"
     #: The intent asks for more margin than the cap allows (futures).
     LEVERAGE_CAP_EXCEEDED = "leverage_cap_exceeded"
@@ -45,6 +47,7 @@ class RiskCheck(StrEnum):
     KILL_SWITCH_INACTIVE = "kill_switch_inactive"
     SYMBOL_ALLOWED = "symbol_allowed"
     MARKET_DATA_FRESH = "market_data_fresh"
+    OPEN_POSITIONS_WITHIN_LIMIT = "open_positions_within_limit"
     DAILY_LOSS_WITHIN_LIMIT = "daily_loss_within_limit"
     WEEKLY_LOSS_WITHIN_LIMIT = "weekly_loss_within_limit"
     #: Futures: margin checks run before the per-trade risk cap.

@@ -49,6 +49,7 @@ from position_monitor import BrokerVenueCheck, MonitorAction, PositionMonitor
 from position_monitor.quotes import QuoteSource
 from signal_service import SignalRiskRejectedError, SignalService, SignalStateError
 from trading_runner.candles import LatestCandleSource
+from trading_runner.ranking import rank_candidates
 
 __all__ = [
     "RunnerConfigError",
@@ -232,6 +233,11 @@ class TradingRunner:
     def _candidates(self, fresh: set[str], now: datetime) -> tuple[Signal, ...]:
         """Signals the runner may act on: ``RISK_OK``, unexpired, on fresh data.
 
+        Candidates are ranked by signal strength (ADX and distance beyond the slow
+        EMA), because ``max_open_positions`` means only the top few can be entered in
+        one scan; the risk gate refuses the rest and says so. Reward:risk cannot rank
+        them: the fixed 2 % stop / 4 % target makes it 2.0 for every signal.
+
         A symbol that already holds a position in the signal's direction is skipped:
         the demo strategy re-signals the same cross on the next cycle, and acting on it
         again would pyramid one idea into a larger position. A position only grows
@@ -254,7 +260,10 @@ class TradingRunner:
                 )
                 continue
             candidates.append(signal)
-        return tuple(candidates)
+        # The book can hold only ``max_open_positions`` ideas at once, so the order the
+        # candidates are offered in decides which ones get a slot: the strongest trend
+        # is offered first, not whichever ticker sorts first.
+        return rank_candidates(candidates)
 
     def _holds_direction(self, symbol: str, side: Side) -> bool:
         """True when ``symbol`` already has a non-flat position on ``side``."""

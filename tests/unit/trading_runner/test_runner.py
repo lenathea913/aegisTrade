@@ -5,12 +5,19 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from aegis_config import Settings, load_settings
-from aegis_core import Candle, MarketQuote, Timeframe
+from aegis_core import (
+    Candle,
+    MarketQuote,
+    Signal,
+    SignalDirection,
+    SignalStatus,
+    Timeframe,
+)
 from aegis_db import ActivityWriter, RecordingActivityWriter
 from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
@@ -207,7 +214,7 @@ def test_activity_feed_records_the_entry_cycle() -> None:
     runner.run_entry_cycle()
 
     assert any(event == "SIGNAL_GENERATED" for event, _, _ in writer.events)
-    assert any("Evaluated BTC/USDT" in message for message in writer.messages)
+    assert any("BTC/USDT" in message and "Evaluated" in message for message in writer.messages)
 
 
 def test_activity_feed_records_a_kill_switch_skip() -> None:
@@ -238,6 +245,53 @@ def test_activity_feed_records_the_monitor_check() -> None:
             "Checked stop-loss and take-profit levels for 0 protected position(s).",
         )
     ]
+
+
+class StubSignals:
+    """Just enough of ``SignalService`` to test which candidate is offered first."""
+
+    def __init__(self, signals: tuple[Signal, ...]) -> None:
+        self._signals = signals
+
+    def list_signals(self) -> tuple[Signal, ...]:
+        return self._signals
+
+
+def signal_for(symbol: str, *, adx: float, distance_pct: float) -> Signal:
+    return Signal(
+        symbol=symbol,
+        timeframe=TIMEFRAME,
+        strategy_id="simple_ema_cross",
+        strategy_version="1",
+        direction=SignalDirection.LONG,
+        entry_ref=Decimal("32500"),
+        stop_loss=Decimal("31850"),
+        take_profit=Decimal("33800"),
+        risk_reward=Decimal("2"),
+        market_context={"adx": adx, "ema_distance_pct": distance_pct},
+        created_at=NOW,
+        expires_at=NOW + timedelta(hours=1),
+        status=SignalStatus.RISK_OK,
+    )
+
+
+def test_the_runner_offers_the_strongest_signal_first() -> None:
+    """With three slots, the strongest trend must be converted first, not the A."""
+    runner, _ = build_runner()
+    runner._signals = cast(
+        Any,
+        StubSignals(
+            (
+                signal_for("AAA/USDT", adx=26, distance_pct=0.05),
+                signal_for("ZZZ/USDT", adx=47, distance_pct=1.2),
+                signal_for("BBB/USDT", adx=31, distance_pct=0.4),
+            )
+        ),
+    )
+
+    candidates = runner._candidates({"AAA/USDT", "BBB/USDT", "ZZZ/USDT"}, NOW)
+
+    assert [signal.symbol for signal in candidates] == ["ZZZ/USDT", "BBB/USDT", "AAA/USDT"]
 
 
 def test_live_mode_without_permission_refuses_to_start() -> None:

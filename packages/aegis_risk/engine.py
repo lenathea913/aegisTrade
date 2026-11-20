@@ -13,6 +13,9 @@ become) an ``ApprovedOrder``. Design choices worth knowing:
   quote cannot be measured, so it is rejected rather than guessed.
 * **The kill switch is an argument, not a config read**, and ``RiskGate`` binds it
   once so a caller cannot forget it.
+* **A new idea needs a free slot.** ``max_open_positions`` is counted from the
+  book, not from configuration intent, so a scan across ten symbols cannot turn
+  into ten concurrent bets; a position-reducing order never needs a slot.
 * **A protective exit is judged, not blocked.** An intent that only reduces an
   existing position (opposite side, quantity not exceeding it) skips the caps that
   exist to limit *new* exposure — risk-per-trade, loss windows, exposure and
@@ -140,6 +143,21 @@ def evaluate(
         # New-risk caps do not apply to a position-reducing order (see module docstring).
         checks.append(RiskCheck.RISK_REDUCING_ORDER.value)
     else:
+        # Rule 9: how many ideas the book may hold at once. Exposure caps alone would
+        # let a ten-symbol universe open position after position until the total cap
+        # was reached; this decides it up front, so a fourth signal is refused with a
+        # reason instead of being silently sized to nearly nothing.
+        open_positions = len(portfolio_state.open_positions)
+        if open_positions >= risk_limits.max_open_positions:
+            failures.append(
+                _detail(
+                    RejectReason.MAX_OPEN_POSITIONS_REACHED,
+                    f"{open_positions}>={risk_limits.max_open_positions}",
+                )
+            )
+        else:
+            checks.append(RiskCheck.OPEN_POSITIONS_WITHIN_LIMIT.value)
+
         # Rule 3: realized loss windows. Reaching the floor is already too late.
         daily_floor = equity * risk_limits.max_daily_loss_pct / _HUNDRED
         if -portfolio_state.daily_realized_pnl >= daily_floor:

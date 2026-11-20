@@ -69,6 +69,11 @@ _HUNDRED = Decimal("100")
 _QUANTUM = Decimal("0.00000001")
 
 
+def _as_float(value: Decimal | None) -> float | None:
+    """JSON-safe metric for ``market_context`` (Decimal is not serialisable)."""
+    return None if value is None else float(value)
+
+
 @dataclass(frozen=True)
 class ScanReport:
     """What one scan found, including *why* it found nothing.
@@ -202,13 +207,19 @@ class SignalService:
         if intent is None:
             return None
 
-        signal = self._signal_from(intent, history, now)
+        signal = self._signal_from(intent, history, now, strategy)
         decision = self._preview(signal, now)
         if decision.approved:
             return signal.with_status(SignalStatus.RISK_OK)
         return signal.with_status(SignalStatus.BLOCKED_BY_RISK, decision.reasons)
 
-    def _signal_from(self, intent: OrderIntent, history: Sequence[Candle], now: datetime) -> Signal:
+    def _signal_from(
+        self,
+        intent: OrderIntent,
+        history: Sequence[Candle],
+        now: datetime,
+        strategy: EmaCrossStrategy,
+    ) -> Signal:
         entry = intent.price if intent.price is not None else history[-1].close
         target = intent.take_profit
         if target is None:
@@ -231,6 +242,10 @@ class SignalService:
                 "last_close": str(last.close),
                 "quote_as_of": last.close_time.isoformat(),
                 "strategy_reason": intent.reason,
+                # Signal strength, recorded with the idea so the runner can rank it
+                # against the other symbols firing in the same scan.
+                "adx": _as_float(strategy.last_adx),
+                "ema_distance_pct": _as_float(strategy.last_ema_distance_pct),
             },
             created_at=now,
             expires_at=now + self._ttl,
@@ -342,11 +357,27 @@ class SignalService:
         # available at this leverage (never post more collateral than exists).
         qty_for_risk = capacity / risk_per_unit
         qty_for_margin = state.equity * Decimal(leverage) * MARGIN_UTILISATION / signal.entry_ref
+        # Exposure room. The per-symbol and total caps are *caps*, so sizing has to
+        # leave the order inside them: with 20 % per symbol and 60 % total on a
+        # ten-symbol universe, sizing to the risk budget alone would ask for ~25 % of
+        # equity and be rejected by the very limits it was sized under. This is also
+        # the sizing half of ``max_open_positions``: the third position uses the last
+        # of the total room, and the fourth has none.
+        symbol_exposure = state.position(signal.symbol).notional
+        total_exposure = sum((position.notional for position in state.positions), Decimal("0"))
+        room = min(
+            state.equity * self._gate.limits.max_exposure_per_symbol_pct / _HUNDRED
+            - symbol_exposure,
+            state.equity * self._gate.limits.max_total_exposure_pct / _HUNDRED - total_exposure,
+        )
+        qty_for_room = room / signal.entry_ref if room > 0 else Decimal("0")
         # Round *down*: a quantity rounded up would make the order exceed the very
         # cap it was sized from, and the gate would reject its own sizing.
-        qty = min(qty_for_risk, qty_for_margin).quantize(_QUANTUM, rounding=ROUND_DOWN)
+        qty = min(qty_for_risk, qty_for_margin, qty_for_room).quantize(
+            _QUANTUM, rounding=ROUND_DOWN
+        )
         if qty <= 0:
-            raise SignalStateError("risk budget leaves no room for this signal")
+            raise SignalStateError("exposure caps leave no room for this signal")
 
         return OrderIntent(
             symbol=signal.symbol,

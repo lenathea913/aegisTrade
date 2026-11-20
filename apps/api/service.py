@@ -205,6 +205,7 @@ class ApiService:
                 max_weekly_loss_pct=str(limits.max_weekly_loss_pct),
                 max_exposure_per_symbol_pct=str(limits.max_exposure_per_symbol_pct),
                 max_total_exposure_pct=str(limits.max_total_exposure_pct),
+                max_open_positions=limits.max_open_positions,
                 max_leverage=str(limits.max_leverage),
                 allowed_symbols=sorted(limits.allowed_symbols),
             ),

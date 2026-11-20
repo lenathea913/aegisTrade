@@ -107,7 +107,7 @@ def test_approved_intent_fills_and_updates_positions_and_audit(
     assert result.approved is not None
     assert result.approved_order is result.approved
     # Spot still runs the futures margin checks (they pass trivially at 1x).
-    assert len(result.approved.risk_checks_passed) == 12
+    assert len(result.approved.risk_checks_passed) == 13
     assert result.trade is not None
     assert result.trade.fee == Decimal("1.5")
 

@@ -40,7 +40,7 @@ from aegis_ledger.records import position_from_row
 from aegis_observability import get_logger
 from aegis_risk import RiskGate
 from order_reconciler.cli import reconcile_positions_once
-from position_monitor.monitor import MonitorAction, PositionMonitor
+from position_monitor.monitor import CheckLogCadence, MonitorAction, PositionMonitor
 from position_monitor.quotes import CandleQuoteSource, live_quote_source
 from position_monitor.venue import BrokerVenueCheck
 
@@ -95,6 +95,7 @@ def build_monitor(
     ledger: PortfolioLedger | None = None,
     writer: LedgerWriter | None = None,
     broker: Any = None,
+    check_cadence: CheckLogCadence | None = None,
 ) -> PositionMonitor:
     """Wire a monitor from configuration (real gate, ledger writer, venue check).
 
@@ -129,6 +130,7 @@ def build_monitor(
         live_quotes=live_quote_source(settings, factory),
         protect_take_profit=settings.position_monitor.protect_take_profit,
         venue_check=venue_check,
+        check_cadence=check_cadence,
     )
 
 
@@ -203,12 +205,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+        # One cadence for the whole run: a fresh monitor per check would otherwise
+        # restart the "still watching" timer and write a row every pass.
+        cadence = CheckLogCadence()
+
         # One session per check: the closing order, its trade, the position upsert
         # and the audit rows commit together (see docs/runbooks/autonomous-trading.md).
         def _run_once() -> None:
             with session_scope(factory) as session:
                 monitor = build_monitor(
-                    settings, factory, ledger=book, writer=LedgerStore(session), broker=broker
+                    settings,
+                    factory,
+                    ledger=book,
+                    writer=LedgerStore(session),
+                    broker=broker,
+                    check_cadence=cadence,
                 )
                 _check_once(monitor)
             book_venue_fills(settings, factory, book, monitor.withheld_venue_executions)

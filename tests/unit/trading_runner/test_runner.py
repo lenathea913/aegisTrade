@@ -236,19 +236,32 @@ def test_activity_feed_records_a_kill_switch_skip() -> None:
     ]
 
 
-def test_activity_feed_records_the_monitor_check() -> None:
+def test_a_flat_book_writes_no_protection_check_row() -> None:
+    """The monitor runs every minute; "0 protected position(s)" is not news."""
     writer = RecordingActivityWriter()
     runner, _ = build_runner(activity=writer)
 
     runner.run_monitor_cycle()
 
-    assert writer.events == [
-        (
-            "PROTECTION_CHECK",
-            "INFO",
-            "Checked stop-loss and take-profit levels for 0 protected position(s).",
-        )
-    ]
+    assert writer.events == []
+
+
+def test_a_guarded_position_is_summarised_once_per_window() -> None:
+    writer = RecordingActivityWriter()
+    runner, ledger = build_runner(activity=writer)
+    assert runner.run_entry_cycle().filled == (SYMBOL,)
+    assert ledger.protection(SYMBOL) is not None
+    expected = (
+        "PROTECTION_CHECK",
+        "INFO",
+        "Checked stop-loss and take-profit levels for 1 protected position(s).",
+    )
+
+    # Two passes a minute apart in runner time: only the first may reach the feed.
+    runner.run_monitor_cycle()
+    runner.run_monitor_cycle()
+
+    assert [event for event in writer.events if event[0] == "PROTECTION_CHECK"] == [expected]
 
 
 class StubSignals:

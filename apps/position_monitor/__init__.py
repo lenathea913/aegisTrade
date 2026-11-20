@@ -10,13 +10,14 @@ back; a protective exit is simply an intent the gate recognises as risk-reducing
 
 from __future__ import annotations
 
-from position_monitor.monitor import ExitTrigger, MonitorAction, PositionMonitor
+from position_monitor.monitor import CheckLogCadence, ExitTrigger, MonitorAction, PositionMonitor
 from position_monitor.quotes import CandleQuoteSource, QuoteSource
 from position_monitor.venue import BrokerVenueCheck, VenueCheck
 
 __all__ = [
     "BrokerVenueCheck",
     "CandleQuoteSource",
+    "CheckLogCadence",
     "ExitTrigger",
     "MonitorAction",
     "PositionMonitor",

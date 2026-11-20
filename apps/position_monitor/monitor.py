@@ -46,7 +46,7 @@ from aegis_observability import get_logger
 from position_monitor.quotes import QuoteSource
 from position_monitor.venue import VenueCheck
 
-__all__ = ["ExitTrigger", "MonitorAction", "PositionMonitor"]
+__all__ = ["CheckLogCadence", "ExitTrigger", "MonitorAction", "PositionMonitor"]
 
 #: Distance between the mark and the stop attached to a closing intent (0.2 %).
 #: It only has to be non-zero: the intent is closing, not opening, exposure.
@@ -54,6 +54,43 @@ _STOP_BUFFER = Decimal("0.002")
 
 #: Quantities are venue-rounded; a difference below this is the same position.
 _QTY_EPSILON = Decimal("0.000000001")
+
+#: How often the "checked N protected position(s)" row may appear in the Activity feed.
+#: The monitor runs every minute; a row per pass buries the rows that matter.
+_CHECK_LOG_INTERVAL_SECONDS = 900.0
+
+
+class CheckLogCadence:
+    """Decides when the periodic "still watching N positions" row may be written.
+
+    The state belongs to the caller, not to the monitor: the runner builds a fresh
+    ``PositionMonitor`` for every cycle (it needs that cycle's writer and broker), so a
+    cadence kept on the monitor would forget itself once a minute and write a row every
+    pass after all.
+    """
+
+    def __init__(self, interval_seconds: float = _CHECK_LOG_INTERVAL_SECONDS) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("check log interval must be positive")
+        self._interval = interval_seconds
+        self._last: tuple[datetime, int] | None = None
+
+    def due(self, now: datetime, guarded: int) -> bool:
+        """True when a summary for ``guarded`` positions is worth a row now.
+
+        Nothing guarded means nothing to report. A summary repeats at most every
+        ``interval_seconds``, and again immediately when the count changes: a position
+        opening or closing is real news, a stable count is not.
+        """
+        if guarded == 0:
+            return False
+        if self._last is not None:
+            logged_at, logged_count = self._last
+            elapsed = (now - logged_at).total_seconds()
+            if logged_count == guarded and elapsed < self._interval:
+                return False
+        self._last = (now, guarded)
+        return True
 
 
 class ExitTrigger(StrEnum):
@@ -96,6 +133,7 @@ class PositionMonitor:
         live_quotes: QuoteSource | None = None,
         venue_check: VenueCheck | None = None,
         activity: ActivityWriter | None = None,
+        check_cadence: CheckLogCadence | None = None,
     ) -> None:
         self._ledger = ledger
         self._pipeline = pipeline
@@ -111,6 +149,8 @@ class PositionMonitor:
         self._activity = activity or NullActivityWriter()
         #: Symbols whose exit was withheld this pass (see ``withheld_venue_executions``).
         self._withheld: list[str] = []
+        #: Shared by every monitor a long-lived caller builds; see ``CheckLogCadence``.
+        self._cadence = check_cadence or CheckLogCadence()
         self._logger = get_logger("aegis.position_monitor")
 
     @property
@@ -132,11 +172,7 @@ class PositionMonitor:
         """Evaluate every protected position once; return the exit attempts."""
         actions: list[MonitorAction] = []
         self._withheld = []
-        self._activity.record(
-            "PROTECTION_CHECK",
-            f"Checked stop-loss and take-profit levels for {len(self._ledger.protections)} "
-            "protected position(s).",
-        )
+        self._record_check_summary()
         for protection in self._ledger.protections:
             action = self._check_one(protection)
             if action is not None:
@@ -144,6 +180,29 @@ class PositionMonitor:
         return tuple(actions)
 
     # ------------------------------------------------------------- internals
+
+    def _record_check_summary(self) -> None:
+        """Write the periodic "still watching N positions" row — not one per pass.
+
+        The monitor runs every minute. ``PROTECTION_CHECK`` while the book is flat says
+        nothing an operator can act on and fills the Activity feed with rows that hide
+        the ones that matter, so a flat book writes none at all. Once something is
+        actually guarded the summary appears at most every 15 minutes, and immediately
+        when the number of guarded positions changes, so the feed still proves the
+        protection loop is alive. A stop or target that really fires keeps its own
+        immediate row either way.
+        """
+        guarded = sum(1 for protection in self._ledger.protections if not self._is_flat(protection))
+        if not self._cadence.due(self._clock(), guarded):
+            return
+        self._activity.record(
+            "PROTECTION_CHECK",
+            f"Checked stop-loss and take-profit levels for {guarded} protected position(s).",
+        )
+
+    def _is_flat(self, protection: PositionProtection) -> bool:
+        """True when the book no longer holds the position this protection guards."""
+        return self._ledger.position(protection.symbol).is_flat
 
     def _check_one(self, protection: PositionProtection) -> MonitorAction | None:
         position = self._ledger.position(protection.symbol)

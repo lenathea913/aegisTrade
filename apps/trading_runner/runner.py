@@ -45,7 +45,12 @@ from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerWriter, PortfolioLedger
 from aegis_observability import get_logger
 from aegis_risk import RiskGate
-from position_monitor import BrokerVenueCheck, MonitorAction, PositionMonitor
+from position_monitor import (
+    BrokerVenueCheck,
+    CheckLogCadence,
+    MonitorAction,
+    PositionMonitor,
+)
 from position_monitor.quotes import QuoteSource
 from signal_service import SignalRiskRejectedError, SignalService, SignalStateError
 from trading_runner.candles import LatestCandleSource
@@ -141,6 +146,9 @@ class TradingRunner:
         self._position_reconciliation = position_reconciliation
         #: Operator-facing feed: the same facts as the log, in rows the dashboard polls.
         self._activity = activity or NullActivityWriter()
+        #: The monitor is rebuilt every cycle, so its "still watching" cadence lives here:
+        #: a row per pass (or one per pass while flat) is what filled the Activity feed.
+        self._check_cadence = CheckLogCadence()
         self._timeframe: Timeframe = settings.market_data.timeframes[0]
         self._logger = get_logger("aegis.runner")
 
@@ -482,6 +490,7 @@ class TradingRunner:
             # Ask the venue before closing: the stop may have fired first.
             venue_check=venue_check,
             activity=self._activity,
+            check_cadence=self._check_cadence,
         )
 
     @contextmanager

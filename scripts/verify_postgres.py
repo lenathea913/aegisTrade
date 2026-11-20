@@ -227,6 +227,23 @@ def _pipeline_check(settings: object) -> None:
         engine.dispose()
 
 
+def _seed_symbols(settings: object) -> list[str]:
+    """The symbols the committed seeds can actually serve (``BTCUSDT_1h.csv`` -> BTC)."""
+    from pathlib import Path
+
+    from aegis_config import Settings
+
+    assert isinstance(settings, Settings)
+    seeds = Path(settings.market_data.csv_dir)
+    if not seeds.is_dir():
+        return []
+    return sorted(
+        f"{path.stem.rsplit('_', 1)[0][:-4]}/USDT"
+        for path in seeds.glob("*.csv")
+        if path.stem.rsplit("_", 1)[0].endswith("USDT")
+    )
+
+
 def _collector_check(settings: object) -> None:
     from aegis_config import Settings, load_settings
     from market_collector.cli import build_collector
@@ -236,6 +253,14 @@ def _collector_check(settings: object) -> None:
     # committed CSV seeds so the check never depends on an external exchange being
     # reachable from CI (the default source is the live klines API).
     offline = load_settings(overrides={"market_data": {"source": "csv"}})
+    # The configured universe is the trading universe, not the set of symbols with a
+    # seed file (only BTC has one). Asking the CSV source for the other nine records a
+    # failure per missing file, and this check is about the database round-trip.
+    seeded = _seed_symbols(offline)
+    if seeded:
+        offline = offline.model_copy(
+            update={"market_data": offline.market_data.model_copy(update={"symbols": seeded})}
+        )
     engine = create_engine_from_settings(offline.database)
     factory = create_session_factory(engine)
     try:

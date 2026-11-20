@@ -8,10 +8,11 @@ Fees/slippage/funding are in basis points (1 bp = 0.01 %).
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import Field
 
-from aegis_core import RiskLimit, StrictModel
+from aegis_core import MAX_LEVERAGE, RiskLimit, StrictModel
 from aegis_core.types import FiniteDecimal, NonNegativeDecimal, PositiveDecimal
 
 __all__ = ["BacktestConfig"]
@@ -41,6 +42,18 @@ class BacktestConfig(StrictModel):
 
     #: Whether a SELL signal may open a short (spot = False).
     allow_short: bool = False
+
+    #: Futures leverage. ``1`` is spot-equivalent: the strategy's quantity is the
+    #: notional bought outright and no liquidation is modelled. Above 1 the same
+    #: margin buys ``leverage`` times the notional, so PnL, fees and funding scale
+    #: with it while the isolated margin (and therefore the liquidation price) moves
+    #: ``1/leverage`` away from the entry.
+    leverage: int = Field(default=1, ge=1, le=MAX_LEVERAGE)
+
+    #: Margin mode. Only isolated margin is simulated (and only it is accepted live):
+    #: the position's own collateral is what a liquidation consumes, so a crossed
+    #: wallet would need a different accounting model.
+    margin_type: Literal["ISOLATED"] = "ISOLATED"
 
     #: Close any open position on the last bar so trades are not left open.
     close_at_end: bool = True

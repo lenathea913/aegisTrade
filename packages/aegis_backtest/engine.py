@@ -11,6 +11,11 @@ Timing (the part that decides whether a backtest is honest):
   taking priority when both levels are crossed in the same bar (pessimistic).
 * Funding is charged on open notional whenever a bar opens on an 8-hour boundary
   (00:00, 08:00, 16:00 UTC).
+* With ``leverage > 1`` the strategy's quantity is treated as the margin committed at
+  1x, so the same collateral carries ``leverage`` times the notional and PnL, fees and
+  funding scale with it. The position is force-closed at the estimated isolated-margin
+  liquidation price as soon as a bar trades through it — before the stop can fill, if
+  the stop sits beyond that price. At ``leverage == 1`` no liquidation exists.
 
 One position at a time, no pyramiding: a same-direction signal is ignored, an
 opposite one closes the position (and only opens the reverse leg when
@@ -34,6 +39,7 @@ from aegis_backtest.models import (
     RejectedIntent,
 )
 from aegis_core import (
+    MARGIN_UTILISATION,
     Candle,
     MarketContext,
     MarketQuote,
@@ -44,6 +50,8 @@ from aegis_core import (
     RiskLimit,
     Side,
     Timeframe,
+    liquidation_price,
+    margin_for,
 )
 from aegis_metrics import compute_metrics
 from aegis_risk import RiskGate
@@ -87,6 +95,8 @@ class _Simulator:
         self.symbol = symbol
         self.timeframe = timeframe
         self.cash: Decimal = config.initial_equity
+        #: Collateral locked by the open position (isolated margin).
+        self.margin: Decimal = _ZERO
         self.qty: Decimal = _ZERO
         self.entry_price: Decimal | None = None
         self.entry_time: datetime | None = None
@@ -95,6 +105,8 @@ class _Simulator:
         self.stop_loss: Decimal | None = None
         self.take_profit: Decimal | None = None
         self.risk_amount: Decimal = _ZERO
+        self.liq_price: Decimal | None = None
+        self.liquidations: int = 0
         self.trades: list[BacktestTrade] = []
         self.curve: list[EquityPoint] = []
 
@@ -103,13 +115,30 @@ class _Simulator:
         return self.qty != 0
 
     def equity(self, mark: Decimal) -> Decimal:
-        return self.cash + self.qty * mark
+        """Free cash + locked margin + unrealized PnL on the full notional.
+
+        PnL is linear in notional, so leverage does not change it: a 3x position earns
+        the same as three 1x positions. What leverage changes is the margin behind the
+        notional and, with it, how far price can move before the collateral is gone.
+        """
+        if not self.is_open or self.entry_price is None:
+            return self.cash
+        return self.cash + self.margin + self.qty * (mark - self.entry_price)
 
     # ---------------------------------------------------------------- execution
 
-    def _fill_qty(self, intent: OrderIntent) -> Decimal:
+    def _fill_qty(self, intent: OrderIntent, price: Decimal) -> Decimal:
+        """Quantity to fill at ``price``: intent qty x leverage, capped by margin."""
         ratio = self.config.partial_fill_ratio
-        return intent.qty if ratio is None else intent.qty * ratio
+        qty = intent.qty if ratio is None else intent.qty * ratio
+        leverage = Decimal(self.config.leverage)
+        qty *= leverage
+
+        # Isolated margin is ``notional / leverage``; it has to come out of free cash.
+        budget = self.cash * MARGIN_UTILISATION
+        if budget <= 0:
+            return _ZERO
+        return min(qty, budget * leverage / price)
 
     def execute(self, intent: OrderIntent, candle: Candle) -> None:
         """Fill a scheduled intent on ``candle``, if the market allows it."""
@@ -126,10 +155,6 @@ class _Simulator:
             fill_price = _with_slippage(candle.open, intent.side.sign, self.config.slippage_bps)
             fee_bps = taker
 
-        qty = self._fill_qty(intent)
-        if qty <= 0:
-            return
-
         if self.is_open:
             same_direction = (self.qty > 0 and intent.side is Side.BUY) or (
                 self.qty < 0 and intent.side is Side.SELL
@@ -143,6 +168,10 @@ class _Simulator:
         if intent.side is Side.SELL and not self.config.allow_short:
             return
 
+        qty = self._fill_qty(intent, fill_price)
+        if qty <= 0:
+            return
+
         self.open(intent, fill_price, qty, candle.open_time, fee_bps)
 
     def open(
@@ -154,10 +183,12 @@ class _Simulator:
         fee_bps: Decimal,
     ) -> None:
         signed_qty = qty if intent.side is Side.BUY else -qty
+        margin = margin_for(qty * fill_price, self.config.leverage)
         fee = _fee(fill_price, qty, fee_bps)
 
-        self.cash -= signed_qty * fill_price + fee
+        self.cash -= margin + fee
         self.qty = signed_qty
+        self.margin = margin
         self.entry_price = fill_price
         self.entry_time = timestamp
         self.entry_fee = fee
@@ -165,6 +196,13 @@ class _Simulator:
         self.stop_loss = intent.stop_loss
         self.take_profit = intent.take_profit
         self.risk_amount = abs(fill_price - intent.stop_loss) * qty
+        #: Estimated liquidation price; None means the position cannot be liquidated
+        #: (leverage 1 is spot-equivalent, where the collateral equals the notional).
+        self.liq_price = (
+            liquidation_price(fill_price, intent.side, self.config.leverage)
+            if self.config.leverage > 1
+            else None
+        )
 
     def close(
         self,
@@ -180,9 +218,11 @@ class _Simulator:
         abs_qty = abs(qty)
         direction = 1 if qty > 0 else -1
         fee = _fee(price, abs_qty, fee_bps)
-
-        self.cash += qty * price - fee
         gross = (price - self.entry_price) * abs_qty * Decimal(direction)
+
+        # The locked margin comes back and the PnL on the whole notional is settled
+        # against it; a loss larger than the margin is exactly what a liquidation is.
+        self.cash += self.margin + gross - fee
         net = gross - self.entry_fee - fee - self.funding
 
         self.trades.append(
@@ -204,6 +244,7 @@ class _Simulator:
             )
         )
 
+        self.margin = _ZERO
         self.qty = _ZERO
         self.entry_price = None
         self.entry_time = None
@@ -212,6 +253,7 @@ class _Simulator:
         self.stop_loss = None
         self.take_profit = None
         self.risk_amount = _ZERO
+        self.liq_price = None
 
     # ------------------------------------------------------------------ events
 
@@ -229,12 +271,37 @@ class _Simulator:
         self.cash -= amount
         self.funding += amount
 
+    def _liquidation_touched(self, candle: Candle) -> bool:
+        """Whether this bar traded through the liquidation price, stop included.
+
+        A stop between the entry and the liquidation price is a resting order that
+        fills first, so a bar that touches both is a stop, not a liquidation. When the
+        stop sits *beyond* the liquidation price (or is missing) the collateral is
+        gone before the stop could ever be reached.
+        """
+        if self.liq_price is None or not self.is_open:
+            return False
+        if self.qty > 0:
+            if candle.low > self.liq_price:
+                return False
+            return self.stop_loss is None or self.stop_loss <= self.liq_price
+        if candle.high < self.liq_price:
+            return False
+        return self.stop_loss is None or self.stop_loss >= self.liq_price
+
     def check_exits(self, candle: Candle) -> None:
-        """Stop first, then target: if both are crossed, assume the worse one."""
+        """Liquidation, then stop, then target: assume the worse of two equal levels."""
         if not self.is_open:
             return
         slippage = self.config.slippage_bps
         taker = self.config.taker_fee_bps
+
+        if self._liquidation_touched(candle) and self.liq_price is not None:
+            # The venue closes at its own liquidation price; no extra slippage is
+            # modelled on top of it, only the taker fee for the forced close.
+            self.close(self.liq_price, candle.open_time, ExitReason.LIQUIDATED, taker)
+            self.liquidations += 1
+            return
 
         if self.qty > 0:
             if self.stop_loss is not None and candle.low <= self.stop_loss:
@@ -412,6 +479,7 @@ def run(
         trades=tuple(sim.trades),
         rejected_intents=tuple(rejected),
         equity_curve=tuple(sim.curve),
+        liquidations=sim.liquidations,
         metrics=metrics,
         started_at=candles[0].open_time,
         ended_at=candles[-1].close_time,

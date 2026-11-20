@@ -114,6 +114,24 @@ Two rules keep a leveraged position safe when the process is not:
   entry (> 0.5 %) or leverage halts new entries (the protective monitor keeps running)
   and turns the header badge red. See `docs/runbooks/ledger-reconciliation.md`.
 
+## Backtesting leverage
+
+`BacktestConfig` carries `leverage` (1-5) and `margin_type` (`ISOLATED` only). The
+strategy's quantity is read as the margin committed at 1x, so at 3x the same collateral
+carries three times the notional: PnL, fees and funding scale with leverage, and the
+simulated position is force-closed with `exit_reason="liquidated"` at
+`entry * (1 -/+ 1/leverage +/- 0.005)` once a bar trades through that price. A stop that
+sits *between* the entry and the liquidation price still fills first; a stop beyond it
+never gets the chance. At leverage 1 no liquidation is modelled (spot-equivalent).
+
+```bash
+PYTHONPATH="packages;apps" uv run python scripts/run_futures_backtest.py
+PYTHONPATH="packages;apps" uv run python scripts/run_futures_backtest.py --from-db --leverage 1 --leverage 3
+```
+
+`BacktestResult.liquidations` (alias `total_liquidations`) counts the forced exits, so a
+run tells you directly whether the stop was ever reached before the collateral.
+
 ## Operating it
 
 ```bash

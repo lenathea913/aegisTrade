@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import StrEnum
 
+from pydantic import Field
+
 from aegis_backtest.config import BacktestConfig
 from aegis_core import Side, StrictModel, Timeframe
 from aegis_core.types import (
@@ -32,6 +34,7 @@ class ExitReason(StrEnum):
     SIGNAL = "signal"
     STOP_LOSS = "stop_loss"
     TAKE_PROFIT = "take_profit"
+    LIQUIDATED = "liquidated"
     END_OF_DATA = "end_of_data"
 
 
@@ -91,6 +94,8 @@ class BacktestResult(StrictModel):
     trades: tuple[BacktestTrade, ...] = ()
     rejected_intents: tuple[RejectedIntent, ...] = ()
     equity_curve: tuple[EquityPoint, ...] = ()
+    #: Trades force-closed at the estimated liquidation price.
+    liquidations: int = Field(default=0, ge=0)
     metrics: PerformanceMetrics
     started_at: UtcDatetime | None = None
     ended_at: UtcDatetime | None = None
@@ -119,3 +124,8 @@ class BacktestResult(StrictModel):
     @property
     def total_funding(self) -> Decimal:
         return sum((trade.funding for trade in self.trades), Decimal("0"))
+
+    @property
+    def total_liquidations(self) -> int:
+        """Alias of :attr:`liquidations`, kept for symmetry with the totals above."""
+        return self.liquidations

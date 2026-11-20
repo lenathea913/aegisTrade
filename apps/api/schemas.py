@@ -9,13 +9,16 @@ already did.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
 from aegis_core import OrderIntent, Signal
+from aegis_db import ActivityRecord
 
 __all__ = [
+    "ActivityEntryResponse",
+    "ActivityListResponse",
     "CancelOrderResponse",
     "ConversionResponse",
     "ExchangeOrderListResponse",
@@ -33,6 +36,34 @@ __all__ = [
     "SignalListResponse",
     "SignalResponse",
 ]
+
+
+class ActivityEntryResponse(BaseModel):
+    """One line of the activity feed."""
+
+    id: int
+    at: datetime
+    event_type: str
+    level: Literal["INFO", "WARNING", "CRITICAL"]
+    message: str
+
+    @classmethod
+    def from_record(cls, record: ActivityRecord) -> ActivityEntryResponse:
+        return cls(
+            id=record.id,
+            at=record.at,
+            event_type=record.event_type,
+            level=cast(Literal["INFO", "WARNING", "CRITICAL"], record.level),
+            message=record.message,
+        )
+
+
+class ActivityListResponse(BaseModel):
+    """Newest activity first, capped by ``limit``."""
+
+    count: int
+    limit: int
+    entries: list[ActivityEntryResponse]
 
 
 class HealthResponse(BaseModel):

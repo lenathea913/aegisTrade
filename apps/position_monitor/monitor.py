@@ -39,6 +39,7 @@ from aegis_core import (
     Side,
     utc_now,
 )
+from aegis_db import ActivityWriter, NullActivityWriter
 from aegis_execution import ExchangeError, PipelineResult, TradingPipeline
 from aegis_ledger import PortfolioLedger, PositionProtection
 from aegis_observability import get_logger
@@ -94,6 +95,7 @@ class PositionMonitor:
         use_live_price: bool = False,
         live_quotes: QuoteSource | None = None,
         venue_check: VenueCheck | None = None,
+        activity: ActivityWriter | None = None,
     ) -> None:
         self._ledger = ledger
         self._pipeline = pipeline
@@ -105,6 +107,8 @@ class PositionMonitor:
         self._live_quotes = live_quotes
         #: Answers "how much of this leg does the venue still hold?" before an exit.
         self._venue_check = venue_check
+        #: Operator-facing feed; a null writer when the dashboard is not wired.
+        self._activity = activity or NullActivityWriter()
         #: Symbols whose exit was withheld this pass (see ``withheld_venue_executions``).
         self._withheld: list[str] = []
         self._logger = get_logger("aegis.position_monitor")
@@ -128,6 +132,11 @@ class PositionMonitor:
         """Evaluate every protected position once; return the exit attempts."""
         actions: list[MonitorAction] = []
         self._withheld = []
+        self._activity.record(
+            "PROTECTION_CHECK",
+            f"Checked stop-loss and take-profit levels for {len(self._ledger.protections)} "
+            "protected position(s).",
+        )
         for protection in self._ledger.protections:
             action = self._check_one(protection)
             if action is not None:
@@ -171,11 +180,25 @@ class PositionMonitor:
             filled=result.filled,
             approved=result.decision.approved,
         )
+        label = "stop loss" if trigger is ExitTrigger.STOP_LOSS else "take profit"
         if not result.decision.approved:
             self._logger.warning(
                 "monitor_exit_rejected",
                 symbol=protection.symbol,
                 reasons=list(result.reasons),
+            )
+            self._activity.record(
+                "ORDER_REJECTED",
+                f"Protective {label} exit for {protection.symbol} was rejected: "
+                f"{', '.join(result.reasons)}.",
+                level="CRITICAL",
+            )
+        elif result.filled:
+            self._activity.record(
+                "PROTECTION_CHECK",
+                f"{label.capitalize()} hit for {protection.symbol} at {quote.price} "
+                "— position closed.",
+                level="WARNING" if trigger is ExitTrigger.STOP_LOSS else "INFO",
             )
         return MonitorAction(
             symbol=protection.symbol,

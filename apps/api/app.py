@@ -31,7 +31,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from aegis_config import Settings, load_settings
 from aegis_core import __version__, get_random_motivation
 from aegis_core.types import normalise_symbol
-from aegis_db import create_engine_from_settings, create_session_factory, session_scope
+from aegis_db import (
+    ActivityReader,
+    SqlActivityReader,
+    create_engine_from_settings,
+    create_session_factory,
+    session_scope,
+)
 from aegis_execution import ExchangeError, build_broker
 from aegis_ledger import LedgerError, LedgerStore, PortfolioLedger
 from aegis_observability import CONTENT_TYPE_LATEST, Metrics, configure_logging, get_logger
@@ -40,6 +46,8 @@ from api.exchange import cancel_order, open_orders
 from api.formatting import clean_payload, fee, money, price, qty
 from api.repository import SqlTradingRepository
 from api.schemas import (
+    ActivityEntryResponse,
+    ActivityListResponse,
     CancelOrderResponse,
     ClosePositionResponse,
     ConversionResponse,
@@ -165,6 +173,7 @@ def create_app(
     service: ApiService | None = None,
     metrics: Metrics | None = None,
     signals: SignalService | None = None,
+    activity: ActivityReader | None = None,
 ) -> FastAPI:
     """Build the application; everything external is injectable."""
     settings = settings or load_settings()
@@ -196,6 +205,12 @@ def create_app(
             timeframe=settings.market_data.timeframes[0],
             store=SqlSignalStore(session_factory),
         )
+
+    # The feed lives in its own table; reading it through a narrow protocol keeps the
+    # dashboard tests free of a database while the real app shares one engine.
+    if activity is None and session_factory is not None:
+        activity = SqlActivityReader(session_factory)
+    activity_reader = activity
 
     quotes = (
         CandleQuoteSource(session_factory, environment=settings.exchange.environment)
@@ -494,6 +509,47 @@ def create_app(
         if _wants_html(request):
             return _render(request, "journal.html", {"journal": response})
         return JSONResponse(content=response.model_dump(mode="json"))
+
+    # --------------------------------------------------------------- activity
+
+    def _activity_entries(limit: int) -> list[ActivityEntryResponse]:
+        """Newest activity rows, or a 503 when the feed is not wired to a database."""
+        if activity_reader is None:
+            raise HTTPException(status_code=503, detail="activity feed is not configured")
+        try:
+            records = activity_reader.recent(limit)
+        except SQLAlchemyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="activity unavailable: database is not reachable",
+            ) from exc
+        return [ActivityEntryResponse.from_record(record) for record in records]
+
+    def _activity_payload(limit: int) -> ActivityListResponse:
+        entries = _activity_entries(limit)
+        return ActivityListResponse(count=len(entries), limit=limit, entries=entries)
+
+    @app.get("/api/activity", response_model=ActivityListResponse, tags=["ops"])
+    def list_activity(
+        limit: int = Query(default=50, ge=1, le=200, description="newest entries to return"),
+    ) -> ActivityListResponse:
+        """What the bot is doing right now, newest first."""
+        return _activity_payload(limit)
+
+    @app.get("/partials/activity", include_in_schema=False)
+    def activity_partial(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> Response:
+        """The table HTMX swaps in every 3 seconds."""
+        return _render(request, "partials/activity.html", {"activity": _activity_payload(limit)})
+
+    @app.get("/activity", include_in_schema=False)
+    def activity_page(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> Response:
+        return _render(request, "activity.html", {"activity": _activity_payload(limit)})
 
     # ---------------------------------------------------------------- signals
 

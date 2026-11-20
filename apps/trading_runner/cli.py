@@ -29,7 +29,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from aegis_alerting import Alert, AlertLevel, build_alerter
 from aegis_config import Settings, load_settings
-from aegis_db import create_engine_from_settings, create_session_factory, session_scope
+from aegis_db import (
+    SqlActivityWriter,
+    create_engine_from_settings,
+    create_session_factory,
+    session_scope,
+)
 from aegis_ledger import LedgerError, LedgerStore, LedgerWriter, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
 from aegis_risk import RiskGate
@@ -139,6 +144,9 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         position_reconciliation=lambda: reconcile_positions_once(
             settings, factory, ledger, alert_gate=alert_gate
         ),
+        # Its own session per message and its own retention: an activity row must never
+        # join — or roll back — the trading transaction it describes.
+        activity=SqlActivityWriter(factory),
     )
 
 

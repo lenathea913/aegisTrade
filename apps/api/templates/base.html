@@ -13,7 +13,7 @@
       <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-3">
         <span class="text-lg font-semibold tracking-tight">AegisTrade</span>
         <nav class="flex gap-1 text-sm">
-          {% set links = [("/", "Overview"), ("/positions", "Positions"), ("/exchange-orders", "Orders"), ("/journal", "Journal"), ("/signals", "Signals")] %}
+          {% set links = [("/", "Overview"), ("/positions", "Positions"), ("/exchange-orders", "Orders"), ("/journal", "Journal"), ("/activity", "Activity"), ("/signals", "Signals")] %}
           {% for href, label in links %}
             <a
               href="{{ href }}"

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Activity · AegisTrade{% endblock %}
+{% block content %}
+<div class="mb-4 flex flex-wrap items-baseline gap-3">
+  <h1 class="text-xl font-semibold">Activity</h1>
+  <p class="text-sm text-slate-400">
+    What the runner is doing — evaluating candles, asking the risk engine, hitting a
+    stop. Refreshed every 3 seconds; times are UTC.
+  </p>
+</div>
+
+<div id="activity-list" hx-get="/partials/activity" hx-trigger="every 3s" hx-swap="innerHTML">
+  {% include "partials/activity.html" %}
+</div>
+{% endblock %}

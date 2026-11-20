@@ -94,6 +94,27 @@ Key log events:
 Every rejection also writes an `audit.audit_logs` row (`risk_rejected`), which is what
 the dashboard journal shows.
 
+## The Activity page
+
+The same facts are also rows in `trading.bot_activity`, which `/activity` polls every
+three seconds — no PowerShell, no log tailing:
+
+| Event type | Written when |
+| --- | --- |
+| `RUNNER_HEARTBEAT` | an entry cycle found no signal, is waiting for a candle, or is halted |
+| `SIGNAL_GENERATED` | a signal exists and/or was handed to the risk engine |
+| `ORDER_FILLED` / `ORDER_REJECTED` | the pipeline's verdict, with the refusal reasons |
+| `PROTECTION_CHECK` | the monitor's pass over protected positions, and any stop/target hit |
+
+Writes use their own short transaction, so an activity failure can never roll back an
+order. The feed is bounded: the writer keeps the newest 1 000 rows and drops anything
+older than 24 hours (`prune_activity`, at most once every five minutes).
+
+```bash
+curl -s 'localhost:8000/api/activity?limit=20'   # JSON
+open http://localhost:8000/activity              # dashboard
+```
+
 ## What it will not do
 
 - It never builds `ApprovedOrder` itself and never calls a broker directly.

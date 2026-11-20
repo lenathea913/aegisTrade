@@ -1,0 +1,45 @@
+{% if activity.count == 0 %}
+<p class="rounded border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-400">
+  No activity yet. The runner writes a line on every entry and monitor cycle.
+</p>
+{% else %}
+<div class="overflow-x-auto rounded border border-slate-800">
+  <table class="w-full text-left text-sm">
+    <thead class="bg-slate-900/80 text-xs uppercase tracking-wide text-slate-500">
+      <tr>
+        <th class="px-4 py-2">Time (UTC)</th>
+        <th class="px-4 py-2">Level</th>
+        <th class="px-4 py-2">Event</th>
+        <th class="px-4 py-2">Message</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800">
+      {% for entry in activity.entries %}
+        {% if entry.level == "INFO" %}
+          {% set tone = "bg-emerald-500/10 text-emerald-300" %}
+        {% elif entry.level == "WARNING" %}
+          {% set tone = "bg-amber-500/15 text-amber-200" %}
+        {% else %}
+          {% set tone = "bg-rose-600/30 text-rose-100 ring-1 ring-rose-500/50" %}
+        {% endif %}
+      <tr class="align-top bg-slate-950/40">
+        <td class="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-400">
+          {{ entry.at.strftime("%H:%M:%S") }}
+        </td>
+        <td class="whitespace-nowrap px-4 py-2">
+          <span class="rounded px-2 py-0.5 text-xs font-semibold {{ tone }}">{{ entry.level }}</span>
+        </td>
+        <td class="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-500">
+          {{ entry.event_type }}
+        </td>
+        <td class="px-4 py-2 text-slate-200">{{ entry.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="mt-2 text-xs text-slate-500">
+  {{ activity.count }} of up to {{ activity.limit }} entries · the feed keeps the newest
+  1 000 rows and drops anything older than 24 hours.
+</p>
+{% endif %}

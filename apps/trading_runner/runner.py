@@ -40,6 +40,7 @@ from aegis_core import (
     get_random_motivation,
     utc_now,
 )
+from aegis_db import ActivityWriter, NullActivityWriter
 from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerWriter, PortfolioLedger
 from aegis_observability import get_logger
@@ -123,6 +124,7 @@ class TradingRunner:
         clock: Callable[[], datetime] = utc_now,
         entries_blocked: Callable[[], str | None] | None = None,
         position_reconciliation: Callable[[], object] | None = None,
+        activity: ActivityWriter | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -136,6 +138,8 @@ class TradingRunner:
         #: Returns why entries must not run (drift/unavailable), or ``None`` when clear.
         self._entries_blocked = entries_blocked
         self._position_reconciliation = position_reconciliation
+        #: Operator-facing feed: the same facts as the log, in rows the dashboard polls.
+        self._activity = activity or NullActivityWriter()
         self._timeframe: Timeframe = settings.market_data.timeframes[0]
         self._logger = get_logger("aegis.runner")
 
@@ -146,6 +150,11 @@ class TradingRunner:
         if self._settings.risk.kill_switch:
             self._logger.warning(
                 "runner_kill_switch", reason="risk.kill_switch is true; no entries this cycle"
+            )
+            self._activity.record(
+                "ORDER_REJECTED",
+                "Kill switch is active: entries are skipped, exits keep running.",
+                level="WARNING",
             )
             return RunnerCycle(skipped="kill_switch")
 
@@ -158,6 +167,12 @@ class TradingRunner:
                 reason=blocked,
                 detail="reconcile the book, then `python -m order_reconciler --acknowledge-drift`",
             )
+            self._activity.record(
+                "RUNNER_HEARTBEAT",
+                f"Entries halted: {blocked}. Run `python -m order_reconciler --acknowledge-drift` "
+                "once the book matches the venue.",
+                level="CRITICAL",
+            )
             return RunnerCycle(skipped=blocked)
 
         now = self._clock()
@@ -166,6 +181,11 @@ class TradingRunner:
             self._logger.warning(
                 "runner_no_fresh_data",
                 reason="no symbol has a candle inside the configured freshness window",
+            )
+            self._activity.record(
+                "RUNNER_HEARTBEAT",
+                "Waiting for a closed candle: no symbol is inside the freshness window.",
+                level="WARNING",
             )
             return RunnerCycle(skipped="stale_market_data")
 
@@ -177,6 +197,18 @@ class TradingRunner:
             candidates=len(candidates),
             symbols=sorted(fresh),
         )
+        symbols = ", ".join(sorted(fresh))
+        if generated:
+            self._activity.record(
+                "SIGNAL_GENERATED",
+                f"Evaluated {symbols}: {len(generated)} signal(s), "
+                f"{len(candidates)} actionable after freshness and position checks.",
+            )
+        else:
+            self._activity.record(
+                "RUNNER_HEARTBEAT",
+                f"Evaluated {symbols}: no crossover signal.",
+            )
 
         converted: list[str] = []
         filled: list[str] = []
@@ -239,6 +271,10 @@ class TradingRunner:
             self._logger.warning("runner_no_quote", symbol=signal.symbol)
             return None
 
+        self._activity.record(
+            "SIGNAL_GENERATED",
+            f"{signal.direction.value} signal on {signal.symbol} — asking the risk engine.",
+        )
         try:
             with self._writer_factory() as writer:
                 pipeline = self._pipeline(writer)
@@ -253,6 +289,11 @@ class TradingRunner:
                 signal_id=signal.signal_id,
                 reasons=list(exc.reasons),
                 motivation=get_random_motivation(),
+            )
+            self._activity.record(
+                "ORDER_REJECTED",
+                f"Order rejected for {signal.symbol}: {', '.join(exc.reasons)}.",
+                level="WARNING",
             )
             return None
         except SignalStateError as exc:
@@ -276,6 +317,11 @@ class TradingRunner:
                 qty=str(result.intent.qty),
                 trade_id=None if result.trade is None else result.trade.trade_id,
             )
+            self._activity.record(
+                "ORDER_FILLED",
+                f"Filled {result.intent.side.value} {result.intent.qty} {signal.symbol} "
+                f"at {result.intent.price}.",
+            )
         else:
             self._logger.warning(
                 "runner_order_rejected",
@@ -283,6 +329,12 @@ class TradingRunner:
                 approved=result.decision.approved,
                 reasons=list(result.reasons),
                 motivation=get_random_motivation(),
+            )
+            self._activity.record(
+                "ORDER_REJECTED",
+                "Order rejected for "
+                f"{signal.symbol}: {', '.join(result.reasons) or 'no reason given'}.",
+                level="WARNING",
             )
         return result
 
@@ -420,6 +472,7 @@ class TradingRunner:
             protect_take_profit=self._settings.position_monitor.protect_take_profit,
             # Ask the venue before closing: the stop may have fired first.
             venue_check=venue_check,
+            activity=self._activity,
         )
 
     @contextmanager

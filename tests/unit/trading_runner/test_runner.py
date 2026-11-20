@@ -11,6 +11,7 @@ import pytest
 
 from aegis_config import Settings, load_settings
 from aegis_core import Candle, MarketQuote, Timeframe
+from aegis_db import ActivityWriter, RecordingActivityWriter
 from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
@@ -107,7 +108,11 @@ def settings(**overrides: Any) -> Settings:
     return base.model_copy(update=updates)
 
 
-def build_runner(price: str = "32500", **kwargs: Any) -> tuple[TradingRunner, PortfolioLedger]:
+def build_runner(
+    price: str = "32500",
+    activity: ActivityWriter | None = None,
+    **kwargs: Any,
+) -> tuple[TradingRunner, PortfolioLedger]:
     config = settings(**kwargs)
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     signals = SignalService(
@@ -126,6 +131,7 @@ def build_runner(price: str = "32500", **kwargs: Any) -> tuple[TradingRunner, Po
         quotes=Quotes(Decimal(price)),
         writer_factory=lambda: nullcontext(None),
         clock=lambda: NOW,
+        activity=activity,
     )
     return runner, ledger
 
@@ -192,6 +198,46 @@ def test_monitor_cycle_closes_a_position_at_its_stop() -> None:
     assert actions[0].trigger.value == "stop_loss"
     assert actions[0].closed is True
     assert ledger.position(SYMBOL).is_flat is True
+
+
+def test_activity_feed_records_the_entry_cycle() -> None:
+    writer = RecordingActivityWriter()
+    runner, _ = build_runner(activity=writer)
+
+    runner.run_entry_cycle()
+
+    assert any(event == "SIGNAL_GENERATED" for event, _, _ in writer.events)
+    assert any("Evaluated BTC/USDT" in message for message in writer.messages)
+
+
+def test_activity_feed_records_a_kill_switch_skip() -> None:
+    writer = RecordingActivityWriter()
+    runner, _ = build_runner(activity=writer, kill_switch=True)
+
+    runner.run_entry_cycle()
+
+    assert writer.events == [
+        (
+            "ORDER_REJECTED",
+            "WARNING",
+            "Kill switch is active: entries are skipped, exits keep running.",
+        )
+    ]
+
+
+def test_activity_feed_records_the_monitor_check() -> None:
+    writer = RecordingActivityWriter()
+    runner, _ = build_runner(activity=writer)
+
+    runner.run_monitor_cycle()
+
+    assert writer.events == [
+        (
+            "PROTECTION_CHECK",
+            "INFO",
+            "Checked stop-loss and take-profit levels for 0 protected position(s).",
+        )
+    ]
 
 
 def test_live_mode_without_permission_refuses_to_start() -> None:

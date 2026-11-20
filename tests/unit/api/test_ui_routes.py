@@ -25,7 +25,7 @@ from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
 from api.app import create_app
 from api.service import ApiService
-from signal_service import SignalService
+from signal_service import DEFAULT_HISTORY_BARS, SignalService
 
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 SYMBOL = "BTC/USDT"
@@ -44,11 +44,11 @@ class EmptyRepository:
 
 
 def crossover_history() -> tuple[Candle, ...]:
-    price = Decimal("30000")
+    price = Decimal("40000")
     moment = datetime(2026, 6, 1, tzinfo=UTC)
     candles: list[Candle] = []
-    for index in range(120):
-        step = Decimal("-0.004") if index < 80 else Decimal("0.006")
+    for index in range(398):
+        step = Decimal("-0.001") if index < 320 else Decimal("0.0015")
         open_price = price
         close_price = price * (Decimal("1") + step)
         candles.append(
@@ -72,10 +72,10 @@ def crossover_history() -> tuple[Candle, ...]:
 def crossover_prefix() -> tuple[Candle, ...]:
     candles = crossover_history()
     strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
-    for index in range(strategy.warmup_bars, len(candles)):
-        if strategy.on_candle(candles[index], candles[: index + 1]) is not None:
-            return candles[: index + 1]
-    raise AssertionError("fixture produced no crossover")
+    window = candles[-DEFAULT_HISTORY_BARS:]
+    if strategy.on_candle(window[-1], window) is None:
+        raise AssertionError("fixture produced no crossover in the trailing window")
+    return candles
 
 
 class Repo:
@@ -103,11 +103,11 @@ def limits(**overrides: object) -> RiskLimit:
 def no_cross_prefix() -> tuple[Candle, ...]:
     """History whose **last** bar has no crossover: the normal empty scan."""
     candles = crossover_history()
-    strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
-    for end in range(len(candles), strategy.warmup_bars, -1):
-        window = candles[:end]
+    for end in range(len(candles) - 1, DEFAULT_HISTORY_BARS, -1):
+        window = candles[end - DEFAULT_HISTORY_BARS : end]
+        strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
         if strategy.on_candle(window[-1], window) is None:
-            return window
+            return tuple(candles[:end])
     raise AssertionError("fixture always crosses")
 
 

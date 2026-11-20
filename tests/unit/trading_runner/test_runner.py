@@ -14,7 +14,7 @@ from aegis_core import Candle, MarketQuote, Timeframe
 from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
-from signal_service import SignalService
+from signal_service import DEFAULT_HISTORY_BARS, SignalService
 from trading_runner.runner import RunnerConfigError, TradingRunner, ensure_safe_execution_mode
 
 SYMBOL = "BTC/USDT"
@@ -23,12 +23,12 @@ START = datetime(2026, 6, 1, tzinfo=UTC)
 
 
 def crossover_prefix() -> tuple[Candle, ...]:
-    """A downtrend then an uptrend: enough bars for EMA(12) to cross EMA(26)."""
-    price = Decimal("30000")
+    """A downtrend then a recovery: the 50/200 cross needs ~200 bars to exist."""
+    price = Decimal("40000")
     moment = START
     candles: list[Candle] = []
-    for index in range(120):
-        step = Decimal("-0.004") if index < 80 else Decimal("0.006")
+    for index in range(398):
+        step = Decimal("-0.001") if index < 320 else Decimal("0.0015")
         open_price = price
         close_price = price * (Decimal("1") + step)
         candles.append(
@@ -47,11 +47,13 @@ def crossover_prefix() -> tuple[Candle, ...]:
         price = close_price
         moment += timedelta(hours=1)
 
+    # The service only ever sees the trailing window, and the EMA seed depends on
+    # where that window starts, so the cross is verified exactly as it is read.
     strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
-    for index in range(strategy.warmup_bars, len(candles)):
-        if strategy.on_candle(candles[index], candles[: index + 1]) is not None:
-            return tuple(candles[: index + 1])
-    raise AssertionError("fixture produced no crossover")
+    window = candles[-DEFAULT_HISTORY_BARS:]
+    if strategy.on_candle(window[-1], window) is None:
+        raise AssertionError("fixture produced no crossover in the trailing window")
+    return tuple(candles)
 
 
 HISTORY = crossover_prefix()

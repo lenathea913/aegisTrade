@@ -178,6 +178,62 @@ def test_strategy_is_deterministic() -> None:
     assert first == second
 
 
+# ------------------------------------------------------------- adx filter
+
+# A four-bar cycle around 100: the fast EMA crosses constantly while price goes
+# nowhere, which is exactly the chop the filter is supposed to veto.
+CHOP = ["100", "102", "99", "101"] * 80
+
+
+def test_adx_filter_removes_most_crosses_in_a_choppy_market() -> None:
+    unfiltered = collect_intents(
+        CHOP,
+        EmaCrossStrategy(params=EmaCrossParams(fast_period=2, slow_period=4, adx_threshold=None)),
+    )
+    filtered = collect_intents(
+        CHOP,
+        EmaCrossStrategy(
+            params=EmaCrossParams(fast_period=2, slow_period=4, adx_threshold=Decimal("25"))
+        ),
+    )
+
+    assert unfiltered, "the fixture must contain crosses for the filter to matter"
+    # ADX dips and spikes even inside chop, so a few crossings survive; the point is
+    # that the overwhelming majority of them never reach the pipeline.
+    assert len(filtered) * 5 < len(unfiltered)
+
+
+def test_adx_filter_passes_when_the_floor_is_zero() -> None:
+    unfiltered = collect_intents(
+        CHOP,
+        EmaCrossStrategy(params=EmaCrossParams(fast_period=2, slow_period=4, adx_threshold=None)),
+    )
+    permissive = collect_intents(
+        CHOP,
+        EmaCrossStrategy(
+            params=EmaCrossParams(fast_period=2, slow_period=4, adx_threshold=Decimal("0"))
+        ),
+    )
+
+    assert permissive == unfiltered
+
+
+def test_adx_filter_allows_a_cross_inside_a_strong_trend() -> None:
+    # A long decline then a recovery: the EMA cross happens while ADX is high.
+    closes = [str(100)] * 3
+    price = Decimal("100")
+    for index in range(300):
+        price = price * (Decimal("0.99") if index < 200 else Decimal("1.01"))
+        closes.append(str(price))
+
+    intents = collect_intents(
+        closes,
+        EmaCrossStrategy(params=EmaCrossParams(fast_period=9, slow_period=21)),
+    )
+
+    assert intents, "a strong trend should clear the ADX floor"
+
+
 def test_symbol_is_normalised() -> None:
     strategy = EmaCrossStrategy(symbol="btc-usdt")
 

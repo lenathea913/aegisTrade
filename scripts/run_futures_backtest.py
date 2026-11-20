@@ -1,4 +1,8 @@
-"""Compare one EMA 12/26 backtest at 1x (spot-equivalent) against leveraged futures.
+"""Compare strategies and leverage on one set of bars.
+
+Rows differ only by strategy (and leverage): same candles, same quantity, same costs.
+``--ema`` is a plain EMA cross, ``--ema-adx`` adds the ADX >= 25 regime filter, and
+``--bollinger`` adds the mean-reversion strategy.
 
 The question this answers is narrow and worth stating: *given the same costs and starting
 equity, which EMA pair survives this market, and does leverage help or does it just make
@@ -18,19 +22,26 @@ Usage:
     python scripts/run_futures_backtest.py --from-db       # stored candles, 1x vs 3x
     python scripts/run_futures_backtest.py --leverage 1 --leverage 5
     python scripts/run_futures_backtest.py --from-db \
-        --ema 12/26 --ema 3/5 --ema 9/21 --ema 50/200
+        --ema 9/21 --ema-adx 9/21 --ema 50/200 --bollinger
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 
 from aegis_backtest import BacktestConfig, BacktestResult, load_candles_csv, run
 from aegis_core import Candle, Timeframe
-from aegis_strategy import EmaCrossParams, EmaCrossStrategy
+from aegis_strategy import (
+    BollingerParams,
+    BollingerReversionStrategy,
+    EmaCrossParams,
+    EmaCrossStrategy,
+    StrategyBase,
+)
 
 DEFAULT_CSV = Path("data/seeds/BTCUSDT_1h.csv")
 DEFAULT_SYMBOL = "BTC/USDT"
@@ -92,14 +103,14 @@ def _parse_ema(raw: str) -> tuple[int, int]:
     return fast, slow
 
 
-def _describe(result: BacktestResult, ema: tuple[int, int], leverage: int) -> dict[str, str]:
+def _describe(result: BacktestResult, label: str, leverage: int) -> dict[str, str]:
     metrics = result.metrics
     initial = result.config.initial_equity
     total_return = (result.final_equity / initial - Decimal("1")) * Decimal("100")
     profit_factor = "n/a" if metrics.profit_factor is None else f"{metrics.profit_factor:.2f}"
     sharpe = "n/a" if metrics.sharpe is None else f"{metrics.sharpe:.2f}"
     return {
-        "ema": f"{ema[0]}/{ema[1]}",
+        "strategy": label,
         "leverage": f"{leverage}x",
         "trades": str(metrics.total_trades),
         "liquidations": str(result.liquidations),
@@ -122,6 +133,61 @@ def _print_table(rows: list[dict[str, str]]) -> None:
     print("-" * len(header))
     for row in rows:
         print("  ".join(row[column].ljust(widths[column]) for column in columns))
+
+
+def _scenarios(args: argparse.Namespace) -> list[tuple[str, Callable[[], StrategyBase]]]:
+    """The strategies to compare, in table order, each built fresh per run.
+
+    ``--ema`` is the plain cross (the baseline), ``--ema-adx`` the same pair with the
+    ADX regime filter, ``--bollinger`` the mean-reversion strategy. Fresh instances
+    matter: a strategy carries indicator state, and a run must never inherit the
+    previous one's.
+    """
+    symbol = args.symbol
+    timeframe = Timeframe(args.timeframe)
+    qty = Decimal("0.05")
+
+    def ema(pair: tuple[int, int], threshold: Decimal | None) -> Callable[[], StrategyBase]:
+        return lambda: EmaCrossStrategy(
+            symbol=symbol,
+            timeframe=timeframe,
+            params=EmaCrossParams(
+                fast_period=pair[0],
+                slow_period=pair[1],
+                qty=qty,
+                adx_threshold=threshold,
+            ),
+        )
+
+    scenarios: list[tuple[str, Callable[[], StrategyBase]]] = []
+    for pair in args.emas:
+        scenarios.append((f"ema {pair[0]}/{pair[1]}", ema(pair, None)))
+    for pair in args.emas_adx:
+        scenarios.append((f"ema {pair[0]}/{pair[1]} +adx25", ema(pair, Decimal("25"))))
+    if args.bollinger:
+        scenarios.append(
+            (
+                "bollinger 20/2",
+                lambda: BollingerReversionStrategy(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    params=BollingerParams(qty=qty),
+                ),
+            )
+        )
+    if not scenarios:
+        defaults = EmaCrossParams()
+        scenarios.append(
+            (
+                f"ema {defaults.fast_period}/{defaults.slow_period} +adx25",
+                lambda: EmaCrossStrategy(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    params=EmaCrossParams(qty=qty),
+                ),
+            )
+        )
+    return scenarios
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,8 +218,21 @@ def main(argv: list[str] | None = None) -> int:
         type=_parse_ema,
         action="append",
         dest="emas",
-        help="EMA fast/slow pair to run (repeatable), e.g. --ema 9/21; defaults to the "
-        "strategy's own parameters",
+        default=[],
+        help="EMA fast/slow pair to run without a filter (repeatable), e.g. --ema 9/21",
+    )
+    parser.add_argument(
+        "--ema-adx",
+        type=_parse_ema,
+        action="append",
+        dest="emas_adx",
+        default=[],
+        help="EMA fast/slow pair to run with the ADX >= 25 regime filter (repeatable)",
+    )
+    parser.add_argument(
+        "--bollinger",
+        action="store_true",
+        help="include the Bollinger mean-reversion strategy",
     )
     parser.add_argument("--taker-fee-bps", type=Decimal, default=Decimal("5"))
     parser.add_argument("--slippage-bps", type=Decimal, default=Decimal("5"))
@@ -177,15 +256,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     leverages = args.leverages or [1, 3]
-    default_params = EmaCrossParams()
-    emas = args.emas or [(default_params.fast_period, default_params.slow_period)]
     rows: list[dict[str, str]] = []
-    runs: list[tuple[tuple[int, int], int, BacktestResult]] = []
-    for ema in emas:
+    runs: list[tuple[str, int, BacktestResult]] = []
+    for label, build in _scenarios(args):
         for leverage in leverages:
-            # Same bars, same quantity, same costs: only the EMA pair and leverage differ.
-            params = EmaCrossParams(fast_period=ema[0], slow_period=ema[1], qty=Decimal("0.05"))
-            strategy = EmaCrossStrategy(symbol=args.symbol, timeframe=timeframe, params=params)
+            # Same bars, same quantity, same costs: only the strategy and leverage differ.
             config = BacktestConfig(
                 initial_equity=args.equity,
                 taker_fee_bps=args.taker_fee_bps,
@@ -194,9 +269,9 @@ def main(argv: list[str] | None = None) -> int:
                 allow_short=not args.no_short,
                 leverage=leverage,
             )
-            result = run(strategy, candles, config)
-            runs.append((ema, leverage, result))
-            rows.append(_describe(result, ema, leverage))
+            result = run(build(), candles, config)
+            runs.append((label, leverage, result))
+            rows.append(_describe(result, label, leverage))
 
     print(f"data            : {len(candles)} bars of {args.symbol} {timeframe} from {source}")
     print(
@@ -213,9 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     _print_table(rows)
     print()
 
-    for ema, leverage, result in runs:
+    for label, leverage, result in runs:
         liquidated = [trade for trade in result.trades if trade.exit_reason.value == "liquidated"]
-        label = f"EMA {ema[0]}/{ema[1]} @ {leverage}x"
+        label = f"{label} @ {leverage}x"
         if liquidated:
             first = liquidated[0]
             print(

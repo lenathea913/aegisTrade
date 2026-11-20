@@ -150,6 +150,27 @@ bars may differ from the futures history by a fraction of a percent.
 `BacktestResult.liquidations` (alias `total_liquidations`) counts the forced exits, so a
 run tells you directly whether the stop was ever reached before the collateral.
 
+### Regime filter and mean reversion
+
+An EMA cross is a trend follower, and in a market that is only oscillating every cross
+is noise. `EmaCrossParams.adx_threshold` (default **25**, period 14) makes the strategy
+ignore a cross while ADX is below it; `None` disables the filter, which is what a
+baseline run needs. The default pair is **50/200** — the pair that lost the least over a
+year of history.
+
+`BollingerReversionStrategy` bets the other way: it buys when price crosses into the
+lower band and sells when it crosses into the upper one, on the theory that a stretch
+away from the mean is more often faded than continued.
+
+```bash
+PYTHONPATH="packages;apps" uv run python scripts/run_futures_backtest.py --from-db \
+  --leverage 1 --ema 9/21 --ema-adx 9/21 --ema 50/200 --bollinger
+```
+
+`--ema` runs a pair unfiltered, `--ema-adx` adds the ADX floor, `--bollinger` adds the
+mean-reversion strategy. All rows share the same bars, quantity and costs, so the only
+thing that differs between them is the strategy.
+
 ## Operating it
 
 ```bash

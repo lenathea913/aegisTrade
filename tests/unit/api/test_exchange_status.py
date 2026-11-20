@@ -15,7 +15,7 @@ from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
 from api.app import create_app
 from api.service import ApiService
-from signal_service import SignalService
+from signal_service import DEFAULT_HISTORY_BARS, SignalService
 
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 SYMBOL = "BTC/USDT"
@@ -42,11 +42,11 @@ class Repo:
 
 
 def crossover_prefix() -> tuple[Candle, ...]:
-    price = Decimal("30000")
+    price = Decimal("40000")
     moment = datetime(2026, 6, 1, tzinfo=UTC)
     candles: list[Candle] = []
-    for index in range(120):
-        step = Decimal("-0.004") if index < 80 else Decimal("0.006")
+    for index in range(398):
+        step = Decimal("-0.001") if index < 320 else Decimal("0.0015")
         open_price = price
         close_price = price * (Decimal("1") + step)
         candles.append(
@@ -66,10 +66,10 @@ def crossover_prefix() -> tuple[Candle, ...]:
         moment += timedelta(hours=1)
     all_candles = tuple(candles)
     strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
-    for index in range(strategy.warmup_bars, len(all_candles)):
-        if strategy.on_candle(all_candles[index], all_candles[: index + 1]) is not None:
-            return all_candles[: index + 1]
-    raise AssertionError("fixture produced no crossover")
+    window = all_candles[-DEFAULT_HISTORY_BARS:]
+    if strategy.on_candle(window[-1], window) is None:
+        raise AssertionError("fixture produced no crossover in the trailing window")
+    return all_candles
 
 
 def limits() -> RiskLimit:

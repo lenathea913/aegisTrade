@@ -15,6 +15,7 @@ from aegis_ledger import PortfolioLedger
 from aegis_risk import RiskGate
 from aegis_strategy import EmaCrossStrategy
 from signal_service import (
+    DEFAULT_HISTORY_BARS,
     SignalNotFoundError,
     SignalPositionOpenError,
     SignalRiskRejectedError,
@@ -27,12 +28,12 @@ TIMEFRAME = Timeframe.H1
 
 
 def series() -> tuple[Candle, ...]:
-    """Down-then-up prices with enough bars for the demo EMA cross."""
-    price = Decimal("30000")
+    """Down-then-up prices: enough bars for the 50/200 cross and a real trend for ADX."""
+    price = Decimal("40000")
     moment = datetime(2026, 6, 1, tzinfo=UTC)
     candles: list[Candle] = []
-    for index in range(120):
-        step = Decimal("-0.004") if index < 80 else Decimal("0.006")
+    for index in range(398):
+        step = Decimal("-0.001") if index < 320 else Decimal("0.0015")
         open_price = price
         close_price = price * (Decimal("1") + step)
         candles.append(
@@ -54,13 +55,13 @@ def series() -> tuple[Candle, ...]:
 
 
 def crossover_history() -> tuple[Candle, ...]:
-    """Candles up to and including the first crossover the strategy reports."""
+    """Candles whose **trailing window** ends on a cross-up, as the service sees it."""
     candles = series()
     strategy = EmaCrossStrategy(symbol=SYMBOL, timeframe=TIMEFRAME)
-    for index in range(strategy.warmup_bars, len(candles)):
-        if strategy.on_candle(candles[index], candles[: index + 1]) is not None:
-            return candles[: index + 1]
-    raise AssertionError("fixture produced no crossover")
+    window = candles[-DEFAULT_HISTORY_BARS:]
+    if strategy.on_candle(window[-1], window) is None:
+        raise AssertionError("fixture produced no crossover in the trailing window")
+    return candles
 
 
 class Repo:
@@ -126,7 +127,7 @@ def test_generation_produces_a_risk_checked_signal() -> None:
     assert signal.direction.value == "LONG"
     assert signal.risk_reward > 0
     assert signal.expires_at == signal.created_at + timedelta(hours=1)
-    assert signal.market_context["bars"] == len(crossover_history())
+    assert signal.market_context["bars"] == DEFAULT_HISTORY_BARS
     assert service.get(signal.signal_id).signal_id == signal.signal_id
 
 

@@ -14,7 +14,9 @@ What "honest" means here:
 * the signal is evaluated on bar *i* only after it closed (``candle.close_time``);
 * the fill happens at ``bar i+1 + latency_bars`` and uses **that bar's open**, moved by
   the configured adverse slippage;
-* the fill price is inside the execution bar's high/low range.
+* the fill price is inside the execution bar's high/low range *after that same slippage
+  is applied*: paying 5 bps above an open that happens to be the bar's high is a cost,
+  not a look-ahead, and comparing against the raw range would call it cheating.
 
 Look-ahead would look like a fill at the signal bar's close, low or high. Those prices
 are printed too, with the edge they would have handed the strategy, so the difference
@@ -49,7 +51,8 @@ from aegis_strategy import EmaCrossParams, EmaCrossStrategy
 __all__ = ["main"]
 
 DEFAULT_SYMBOL = "BTC/USDT"
-TIMEFRAME = Timeframe.H1
+#: Used only when neither ``--timeframe`` nor the configuration names one.
+DEFAULT_TIMEFRAME = Timeframe.H1
 _BPS = Decimal("10000")
 _HUNDRED = Decimal("100")
 
@@ -93,11 +96,11 @@ def _checks(passed: bool, label: str, detail: str) -> str:
     return f"[{'PASS' if passed else 'FAIL'}] {label}: {detail}"
 
 
-def _load(symbol: str, environment: str, venue: str) -> list[Candle]:
-    candles = load_from_database(symbol, TIMEFRAME, environment, venue)
+def _load(symbol: str, timeframe: Timeframe, environment: str, venue: str) -> list[Candle]:
+    candles = load_from_database(symbol, timeframe, environment, venue)
     if not candles:
         raise SystemExit(
-            f"no stored {TIMEFRAME.value} candles for {symbol} in "
+            f"no stored {timeframe.value} candles for {symbol} in "
             f"{environment}/{venue}; run the collector or scripts/backfill_candles.py first"
         )
     return candles
@@ -130,6 +133,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="market of the stored bars (default: execution.market_type)",
     )
     parser.add_argument(
+        "--timeframe",
+        choices=[timeframe.value for timeframe in Timeframe],
+        default=None,
+        help=(
+            "bar length to audit (default: market_data.timeframes[0] from the config, "
+            "which is what the runner trades)"
+        ),
+    )
+    parser.add_argument(
         "--slippage-bps",
         type=Decimal,
         default=Decimal("5"),
@@ -143,21 +155,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    venue = args.venue or load_settings().execution.market_type.value
-    stored = _load(args.symbol, args.environment, venue)
+    settings = load_settings()
+    venue = args.venue or settings.execution.market_type.value
+    # Default to the interval the runner trades, so the audit checks the same series
+    # the orders come from instead of assuming 1h.
+    timeframe = Timeframe(args.timeframe) if args.timeframe else settings.market_data.timeframes[0]
+    stored = _load(args.symbol, timeframe, args.environment, venue)
     # The audit needs trade #1, nothing after it: bars are processed in order, so a
     # longer replay cannot change an earlier trade. Replaying all 27 000 stored bars
     # would only make the script slower than the thing it is checking.
     candles = stored if args.bars <= 0 or args.bars >= len(stored) else stored[: args.bars]
     params = EmaCrossParams()
-    strategy = EmaCrossStrategy(symbol=args.symbol, timeframe=TIMEFRAME, params=params)
+    strategy = EmaCrossStrategy(symbol=args.symbol, timeframe=timeframe, params=params)
     config = BacktestConfig(slippage_bps=args.slippage_bps, latency_bars=0)
     result = run(strategy, candles, config)
 
     if not result.trades:
         print(
             f"no trade to audit: {strategy.strategy_id} produced none on "
-            f"{len(candles)} bars of {args.symbol} {TIMEFRAME.value}"
+            f"{len(candles)} bars of {args.symbol} {timeframe.value}"
         )
         return 1
 
@@ -168,13 +184,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Re-derive the signal from the same window the engine gave the strategy: bars up
     # to and including the signal bar, nothing after it.
-    replay = EmaCrossStrategy(symbol=args.symbol, timeframe=TIMEFRAME, params=params)
+    replay = EmaCrossStrategy(symbol=args.symbol, timeframe=timeframe, params=params)
     intent = replay.on_candle(signal_bar, candles[: index + 1])
 
-    expected_fill = entry_bar.open * (Decimal("1") + args.slippage_bps / _BPS)
-    if trade.side is Side.SELL:
-        expected_fill = entry_bar.open * (Decimal("1") - args.slippage_bps / _BPS)
-    inside_range = entry_bar.low <= trade.entry_price <= entry_bar.high
+    slip = args.slippage_bps / _BPS
+    direction = Decimal("1") if trade.side is Side.BUY else Decimal("-1")
+    factor = Decimal("1") + slip * direction
+    expected_fill = entry_bar.open * factor
+    # The bar's own range, moved by the same adverse slippage every market fill pays.
+    slipped_low = entry_bar.low * factor
+    slipped_high = entry_bar.high * factor
+    inside_range = slipped_low <= trade.entry_price <= slipped_high
     at_next_open = trade.entry_time == entry_bar.open_time
     after_signal = trade.entry_time > signal_bar.close_time
     price_matches = trade.entry_price == expected_fill
@@ -187,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"data          : audited {len(candles)} of {len(stored)} stored bars of"
-        f" {args.symbol} {TIMEFRAME.value} [{args.environment}/{venue}]"
+        f" {args.symbol} {timeframe.value} [{args.environment}/{venue}]"
         f" {_stamp(candles[0].open_time)} -> {_stamp(candles[-1].close_time)}"
     )
     print(
@@ -261,8 +281,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         _checks(
             inside_range,
-            "fill is inside the execution bar's range",
-            f"{_num(entry_bar.low)} <= {_num(trade.entry_price)} <= {_num(entry_bar.high)}",
+            "fill is inside the execution bar's range plus slippage",
+            f"{_num(slipped_low)} <= {_num(trade.entry_price)} <= {_num(slipped_high)}"
+            f" (bar {_num(entry_bar.low)}..{_num(entry_bar.high)},"
+            f" slippage {args.slippage_bps} bps)",
         )
     )
     print(

@@ -43,7 +43,7 @@ from aegis_core import (
 from aegis_db import ActivityWriter, NullActivityWriter
 from aegis_execution import ExecutionGateway, TradingPipeline, build_broker
 from aegis_ledger import LedgerWriter, PortfolioLedger
-from aegis_observability import get_logger
+from aegis_observability import Metrics, get_logger
 from aegis_risk import RiskGate
 from position_monitor import (
     BrokerVenueCheck,
@@ -131,6 +131,7 @@ class TradingRunner:
         entries_blocked: Callable[[], str | None] | None = None,
         position_reconciliation: Callable[[], object] | None = None,
         activity: ActivityWriter | None = None,
+        metrics: Metrics | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -146,6 +147,8 @@ class TradingRunner:
         self._position_reconciliation = position_reconciliation
         #: Operator-facing feed: the same facts as the log, in rows the dashboard polls.
         self._activity = activity or NullActivityWriter()
+        #: Counters for the daemon's own /metrics endpoint (risk decisions, fills).
+        self._metrics = metrics
         #: The monitor is rebuilt every cycle, so its "still watching" cadence lives here:
         #: a row per pass (or one per pass while flat) is what filled the Activity feed.
         self._check_cadence = CheckLogCadence()
@@ -471,6 +474,7 @@ class TradingRunner:
             ledger=self._ledger,
             writer=writer,
             alerter=self._alerter,
+            metrics=self._metrics,
         )
 
     def _monitor(self, writer: LedgerWriter | None, *, broker: Any = None) -> PositionMonitor:

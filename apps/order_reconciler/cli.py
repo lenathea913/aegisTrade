@@ -27,6 +27,7 @@ from aegis_db import create_engine_from_settings, create_session_factory, sessio
 from aegis_execution import ExchangeOrderState, build_broker
 from aegis_ledger import AuditEvent, EventType, LedgerError, LedgerStore, PortfolioLedger
 from aegis_observability import configure_logging, get_logger
+from aegis_observability.heartbeat import touch_heartbeat
 from order_reconciler.fills import SqlVenueFillRecorder
 from order_reconciler.positions import PositionDrift, PositionReconciler, VenueFill, VenueLeg
 from order_reconciler.protection import (
@@ -345,7 +346,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="clear the entries-halted flag after reconciling the book by hand",
     )
+    parser.add_argument(
+        "--heartbeat-file",
+        default=None,
+        help="touch this file each pass so Docker can healthcheck the daemon",
+    )
     args = parser.parse_args(argv)
+    heartbeat_path: str | None = args.heartbeat_file
 
     settings = load_settings()
     configure_logging(settings.observability)
@@ -373,7 +380,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             "reconciler_skipped",
             detail="paper broker fills synchronously; there is nothing to reconcile",
         )
-        engine.dispose()
+        if args.once:
+            if heartbeat_path is not None:
+                touch_heartbeat(heartbeat_path)
+            engine.dispose()
+            return 0
+        # Stay up instead of exiting: a compose service with restart: unless-stopped
+        # would otherwise restart-loop every few seconds, burying the log and proving
+        # nothing. Idle here, write the heartbeat, and take over as soon as the
+        # configuration points at a real venue.
+        logger.info("reconciler_idle", detail="waiting for a venue that needs reconciling")
+        try:
+            while True:
+                if heartbeat_path is not None:
+                    touch_heartbeat(heartbeat_path)
+                time.sleep(30.0)
+        except KeyboardInterrupt:
+            logger.info("reconciler_stopped")
+        finally:
+            engine.dispose()
         return 0
 
     ledger = PortfolioLedger(initial_equity=settings.risk.initial_equity)
@@ -388,6 +413,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     next_position_check = 0.0
     try:
         while True:
+            if heartbeat_path is not None:
+                touch_heartbeat(heartbeat_path)
             results = reconcile_once(settings, factory, ledger)
             changed = [result for result in results if result.action != "unchanged"]
             if results:

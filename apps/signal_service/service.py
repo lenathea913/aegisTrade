@@ -130,6 +130,7 @@ class SignalService:
         clock: Any = utc_now,
         ttl_seconds: int = DEFAULT_SIGNAL_TTL_SECONDS,
         history_bars: int = DEFAULT_HISTORY_BARS,
+        params: EmaCrossParams | None = None,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("signal ttl must be positive")
@@ -144,6 +145,9 @@ class SignalService:
         self._clock = clock
         self._ttl = timedelta(seconds=ttl_seconds)
         self._history_bars = history_bars
+        #: Strategy tunables from configuration; a caller that omits them gets the
+        #: module defaults, never the dev stress profile hidden somewhere else.
+        self._params = params or EmaCrossParams()
 
     # ------------------------------------------------------------- generation
 
@@ -163,7 +167,7 @@ class SignalService:
         skipped: dict[str, int] = {}
         bars: dict[str, int] = {}
         latest: datetime | None = None
-        params = EmaCrossParams()
+        params = self._params
         warmup = params.slow_period + 1
 
         for symbol in self._symbols:
@@ -199,7 +203,7 @@ class SignalService:
         *,
         warmup: int | None = None,
     ) -> Signal | None:
-        strategy = EmaCrossStrategy(symbol=symbol, timeframe=self._timeframe)
+        strategy = EmaCrossStrategy(symbol=symbol, timeframe=self._timeframe, params=self._params)
         if len(history) < (warmup if warmup is not None else strategy.warmup_bars):
             return None
 

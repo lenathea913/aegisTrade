@@ -1,0 +1,48 @@
+# Safety rules for the AegisTrade stack.
+#
+# Every expression here is backed by a metric some process really writes:
+#   aegis_collector_lag_seconds  -> api, computed from market.candles at scrape time
+#   aegis_entries_halted         -> api, from the durable reconciliation state
+#   aegis_risk_rejections_total  -> trading_runner's /metrics (port 9101)
+#
+# Prometheus only evaluates rules; apps/alert_bridge polls /api/v1/alerts and forwards a
+# newly firing alert through the same TelegramAlerter the risk engine uses.
+
+groups:
+  - name: aegis-safety
+    rules:
+      - alert: CollectorLag
+        expr: aegis_collector_lag_seconds > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Market data is more than 5 minutes old"
+          description: >-
+            The newest stored candle is {{ $value | humanize }}s old. The collector is
+            stopped or the venue feed is down; risk rule 8 will refuse every entry, and
+            protective exits will act on a stale price.
+
+      - alert: LedgerDrift
+        expr: aegis_entries_halted == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Book disagrees with the venue; entries are halted"
+          description: >-
+            The position reconciler found a difference between trading.positions and
+            the exchange. Entries stay blocked until an operator reconciles the book and
+            runs `python -m order_reconciler --acknowledge-drift`.
+
+      - alert: RiskRejectedDailyLoss
+        expr: increase(aegis_risk_rejections_total{reason="daily_loss_limit_reached"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Daily loss limit reached"
+          description: >-
+            The risk engine refused at least one order because the daily loss limit was
+            touched. New risk is blocked for the rest of the day; review the journal
+            before changing anything.

@@ -24,6 +24,7 @@ from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from prometheus_client import start_http_server
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -36,8 +37,10 @@ from aegis_db import (
     session_scope,
 )
 from aegis_ledger import LedgerError, LedgerStore, LedgerWriter, PortfolioLedger
-from aegis_observability import configure_logging, get_logger
+from aegis_observability import Metrics, configure_logging, get_logger
+from aegis_observability.heartbeat import touch_heartbeat
 from aegis_risk import RiskGate
+from aegis_strategy import EmaCrossParams
 from order_reconciler.cli import reconcile_once, reconcile_positions_once
 from order_reconciler.protection import ProtectionAlertGate
 from order_reconciler.state import SqlReconciliationState
@@ -56,22 +59,30 @@ def _writer(factory: sessionmaker[Session]) -> Iterator[LedgerWriter]:
         yield LedgerStore(session)
 
 
-def restore_ledger(ledger: PortfolioLedger, factory: sessionmaker[Session]) -> None:
-    """Reload positions and realized PnL from the database (best effort, logged)."""
+def restore_ledger(ledger: PortfolioLedger, factory: sessionmaker[Session]) -> bool:
+    """Reload positions and realized PnL from the database.
+
+    Returns ``True`` only when the replay actually ran. That boolean is a safety
+    property, not a log detail: a failed replay leaves the book at zero positions and
+    zero loss windows, so the daily/weekly limits would silently start from scratch.
+    The caller blocks entries when this is false; positions and exits are untouched.
+    """
     logger = get_logger("aegis.runner")
     try:
         with session_scope(factory) as session:
             summary = ledger.reconstruct_from_db(session)
     except (LedgerError, SQLAlchemyError) as exc:
-        logger.warning("runner_ledger_reconstruction_failed", error=str(exc))
-        return
+        logger.error("runner_ledger_reconstruction_failed", error=str(exc))
+        return False
     logger.info(
         "runner_ledger_reconstructed",
         trades=summary.trades_replayed,
         open_positions=summary.open_positions,
         equity=str(summary.equity),
         daily_realized_pnl=str(summary.daily_realized_pnl),
+        weekly_realized_pnl=str(summary.weekly_realized_pnl),
     )
+    return True
 
 
 def reconcile_at_startup(
@@ -100,12 +111,33 @@ def reconcile_at_startup(
     )
 
 
-def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingRunner:
+def build_runner(
+    settings: Settings,
+    factory: sessionmaker[Session],
+    *,
+    metrics: Metrics | None = None,
+) -> TradingRunner:
     """Wire the runner: real gate, paper/live broker per config, SQL candles."""
     ledger = PortfolioLedger(initial_equity=settings.risk.initial_equity)
-    restore_ledger(ledger, factory)
-    reconcile_at_startup(settings, factory, ledger)
     alerter = build_alerter(settings.alerting)
+    restored = restore_ledger(ledger, factory)
+    if not restored:
+        # Fail closed, loudly. Trading on a zeroed book would size the next entry
+        # against equity and loss windows that never included this month's losses.
+        alerter.send(
+            Alert(
+                level=AlertLevel.CRITICAL,
+                title="LEDGER NOT RECONSTRUCTED",
+                message=(
+                    "The database replay failed, so daily/weekly loss windows are unknown. "
+                    "New entries are blocked until the runner restarts cleanly."
+                ),
+                source="runner",
+                context={"status": "HALTED", "reason": "ledger_unrestored"},
+            )
+        )
+    else:
+        reconcile_at_startup(settings, factory, ledger)
     # A restored position row says a stop *should* exist. Only the venue knows whether
     # it still does, so every reconciliation cycle verifies (and re-places) it — the
     # daemon runs one immediately, before the first entry. The gate remembers what was
@@ -114,7 +146,9 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
     state = SqlReconciliationState(factory)
 
     def entries_blocked() -> str | None:
-        """Why entries must not run, read from the durable reconciliation flag."""
+        """Why entries must not run: an unreconstructed book first, then drift."""
+        if not restored:
+            return "ledger_unrestored"
         try:
             return state.load().blocked_reason
         except SQLAlchemyError as exc:
@@ -134,6 +168,11 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         timeframe=settings.market_data.timeframes[0],
         # Persisted, so a restart continues the same run instead of re-announcing bars.
         store=SqlSignalStore(factory),
+        params=EmaCrossParams(
+            fast_period=settings.strategy.ema_fast,
+            slow_period=settings.strategy.ema_slow,
+            adx_threshold=settings.strategy.adx_threshold,
+        ),
     )
     return TradingRunner(
         settings=settings,
@@ -155,6 +194,7 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         # Its own session per message and its own retention: an activity row must never
         # join — or roll back — the trading transaction it describes.
         activity=SqlActivityWriter(factory),
+        metrics=metrics,
     )
 
 
@@ -188,7 +228,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--no-monitor", action="store_true", help="do not schedule the protective-exit job"
     )
+    parser.add_argument(
+        "--heartbeat-file",
+        default=None,
+        help="touch this file from a scheduler job so Docker can healthcheck the daemon",
+    )
     args = parser.parse_args(argv)
+    heartbeat_path: str | None = args.heartbeat_file
 
     settings = load_settings()
     configure_logging(settings.observability)
@@ -197,7 +243,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)
-    runner = build_runner(settings, factory)
+
+    metrics: Metrics | None = None
+    if settings.observability.metrics_enabled:
+        metrics = Metrics()
+        try:
+            start_http_server(settings.observability.metrics_port, registry=metrics.registry)
+            logger.info("runner_metrics_started", port=settings.observability.metrics_port)
+        except OSError as exc:
+            # Two processes cannot share a port; a missing endpoint must not stop
+            # trading, but it does mean the safety rules scrape nothing from here.
+            logger.warning("runner_metrics_unavailable", error=str(exc))
+            metrics = None
+
+    runner = build_runner(settings, factory, metrics=metrics)
     if settings.risk.kill_switch:
         build_alerter(settings.alerting).send(
             Alert(
@@ -211,6 +270,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.once:
+            if heartbeat_path is not None:
+                touch_heartbeat(heartbeat_path)
             print(json.dumps(report_payload(runner.run_once()), sort_keys=True))
             return 0
 
@@ -264,6 +325,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             # Do not wait a minute to learn that the book is already wrong.
             runner.run_position_reconciliation()
+        if heartbeat_path is not None:
+            # Write once at startup so a container that is still warming up is not
+            # reported dead by the first healthcheck, then every ten seconds from the
+            # scheduler: if that thread stalls, the file goes stale and Docker notices.
+            touch_heartbeat(heartbeat_path)
+            scheduler.add_job(
+                lambda: touch_heartbeat(heartbeat_path),
+                IntervalTrigger(seconds=10),
+                id="heartbeat",
+                max_instances=1,
+                coalesce=True,
+            )
         logger.info(
             "runner_started",
             environment=settings.environment.value,

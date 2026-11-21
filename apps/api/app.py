@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -27,14 +28,16 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from aegis_config import Settings, load_settings
-from aegis_core import __version__, get_random_motivation
+from aegis_core import __version__, get_random_motivation, utc_now
 from aegis_core.types import normalise_symbol
 from aegis_db import (
     ActivityReader,
+    Candle,
     SqlActivityReader,
     create_engine_from_settings,
     create_session_factory,
@@ -44,6 +47,7 @@ from aegis_execution import ExchangeError, build_broker
 from aegis_ledger import LedgerError, LedgerStore, PortfolioLedger
 from aegis_observability import CONTENT_TYPE_LATEST, Metrics, configure_logging, get_logger
 from aegis_risk import RiskGate
+from aegis_strategy import EmaCrossParams
 from api.exchange import cancel_order, open_orders
 from api.formatting import clean_payload, fee, money, price, qty
 from api.repository import SqlTradingRepository
@@ -235,6 +239,12 @@ def create_app(
             symbols=settings.market_data.symbols,
             timeframe=settings.market_data.timeframes[0],
             store=SqlSignalStore(session_factory),
+            # Production cadence from config; the 15m stress profile is dev-only.
+            params=EmaCrossParams(
+                fast_period=settings.strategy.ema_fast,
+                slow_period=settings.strategy.ema_slow,
+                adx_threshold=settings.strategy.adx_threshold,
+            ),
         )
 
     # The feed lives in its own table; reading it through a narrow protocol keeps the
@@ -304,6 +314,30 @@ def create_app(
         ledger_cache[:] = [(moment, status)]
         return status
 
+    def _collection_lag_seconds() -> float | None:
+        """Age of the newest stored candle for the traded series.
+
+        The collector runs in another process, so it cannot set the API's gauge itself.
+        Computing the age at scrape time is what makes the ``CollectorLag`` rule real
+        instead of a query against a metric nobody writes.
+        """
+        if session_factory is None:
+            return None
+        try:
+            with session_scope(session_factory) as session:
+                newest: datetime | None = session.execute(
+                    select(func.max(Candle.close_time)).where(
+                        Candle.environment == settings.exchange.environment,
+                        Candle.venue == settings.execution.market_type.value,
+                        Candle.timeframe == settings.market_data.timeframes[0].value,
+                    )
+                ).scalar_one_or_none()
+        except SQLAlchemyError:
+            return None
+        if newest is None:
+            return None
+        return max(0.0, (utc_now() - newest).total_seconds())
+
     def _refresh_safety_metrics() -> None:
         """Keep the safety gauges honest at scrape time.
 
@@ -318,6 +352,9 @@ def create_app(
         except SQLAlchemyError:
             return
         metrics.set_entries_halted(bool(_ledger_status().get("halted")))
+        lag = _collection_lag_seconds()
+        if lag is not None:
+            metrics.set_collection_lag(lag)
 
     def _render(request: Request, name: str, context: dict[str, Any]) -> Response:
         """Render a template with the header badges always in scope.

@@ -47,12 +47,10 @@ market_data:
     - NEAR/USDT
     - 1000PEPE/USDT
     - HYPE/USDT
-  # STRESS TEST MODE (temporary): 15m bars so the runner, the protective exits and
-  # the Activity feed are exercised several times an hour instead of a few times a
-  # day. 15m is a supported venue interval, so nothing else has to change. Revert to
-  # `- 1h` (with the 50/200 EMA defaults) when the stress test is over.
+  # Production default. The 15m stress-test cadence lives in configs/dev.yaml; a
+  # temporary experiment must never be the setting a paper/live run inherits.
   timeframes:
-    - 15m
+    - 1h
   # Freshness budget for risk rule 8. null derives it per timeframe from
   # timeframe_duration + collector_interval_seconds + stale_tolerance_seconds
   # (15m -> 1020 s), so a legitimately closed bar is never called stale.
@@ -96,9 +94,24 @@ exchange:
   request_timeout_seconds: 10
   # api_key / api_secret intentionally absent: AEGIS_EXCHANGE__API_KEY etc.
 
+strategy:
+  # The demo EMA cross, 50/200 with an ADX floor of 25. configs/dev.yaml overrides
+  # this with the 3/5 stress profile; nothing else should inherit that cadence.
+  ema_fast: 50
+  ema_slow: 200
+  adx_threshold: 25
+
 alerting:
-  enabled: false
+  # On by default: alerts are always recorded. With no channel they go to the
+  # structured log; set AEGIS_ALERTING__CHANNELS=["telegram"] plus the bot token and
+  # chat id (or a Slack webhook) to deliver them out of band.
+  enabled: true
   channels: []
+
+prometheus:
+  # Read by apps/alert_bridge, which forwards firing Prometheus rules to the alerter.
+  url: http://prometheus:9090
+  alert_poll_seconds: 30
 
 # Real-time marks (apps/market_streamer) and order reconciliation (apps/order_reconciler).
 streaming:

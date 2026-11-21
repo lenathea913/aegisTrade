@@ -35,11 +35,13 @@ __all__ = [
     "MarketType",
     "ObservabilitySettings",
     "PositionMonitorSettings",
+    "PrometheusSettings",
     "ReconcilerSettings",
     "RedisSettings",
     "RiskSettings",
     "RunnerSettings",
     "Settings",
+    "StrategySettings",
     "StreamingSettings",
 ]
 
@@ -279,7 +281,7 @@ class ExchangeSettings(_Section):
 
 
 class AlertingSettings(_Section):
-    """Optional notifications. Disabled by default; no network calls unless enabled."""
+    """Notifications. An empty ``channels`` list routes alerts to the structured log."""
 
     enabled: bool = False
     channels: tuple[Literal["telegram", "slack"], ...] = ()
@@ -302,8 +304,11 @@ class AlertingSettings(_Section):
     def _enabled_channels_are_complete(self) -> Self:
         if not self.enabled:
             return self
+        # No channel means "log only": the alert pipeline is on and every alert is
+        # still recorded, but nothing leaves the process. That is the safe default for
+        # a stack without credentials; naming a channel always requires its secrets.
         if not self.channels:
-            raise ValueError("alerting.enabled requires at least one entry in alerting.channels")
+            return self
         if "telegram" in self.channels and not (
             self.telegram_bot_token is not None and self.telegram_chat_id is not None
         ):
@@ -336,6 +341,41 @@ class PositionMonitorSettings(_Section):
 
     use_live_price: bool = False
     protect_take_profit: bool = True
+
+
+class StrategySettings(_Section):
+    """The demo strategy's parameters, kept out of the code.
+
+    Production is 50/200 with the ADX floor at 25; the short 3/5 cross lives in
+    ``configs/dev.yaml`` as an explicit stress test. Putting the stress values in a
+    module default once made every caller trade a 15-minute scalper by accident, which
+    is exactly the kind of drift a typed config prevents.
+    """
+
+    ema_fast: int = Field(default=50, ge=2, le=200)
+    ema_slow: int = Field(default=200, ge=3, le=500)
+    #: ``None`` disables the ADX filter (a baseline run); ``0`` lets every cross through.
+    adx_threshold: Decimal | None = Field(default=Decimal("25"), ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _fast_must_be_shorter(self) -> Self:
+        if self.ema_fast >= self.ema_slow:
+            raise ValueError("strategy.ema_fast must be shorter than strategy.ema_slow")
+        return self
+
+
+class PrometheusSettings(_Section):
+    """Where the alert bridge reads firing rules from (see ``apps/alert_bridge``)."""
+
+    url: str = "http://prometheus:9090"
+    alert_poll_seconds: int = Field(default=30, ge=5, le=600)
+
+    @field_validator("url")
+    @classmethod
+    def _require_http(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("prometheus.url must start with http:// or https://")
+        return value
 
 
 class Settings(BaseSettings):
@@ -371,6 +411,8 @@ class Settings(BaseSettings):
     api_token: SecretStr | None = None
     runner: RunnerSettings = RunnerSettings()
     position_monitor: PositionMonitorSettings = PositionMonitorSettings()
+    strategy: StrategySettings = StrategySettings()
+    prometheus: PrometheusSettings = PrometheusSettings()
 
     @classmethod
     def settings_customise_sources(
@@ -405,6 +447,23 @@ class Settings(BaseSettings):
             raise ValueError(
                 "execution.market_type 'futures' may only run against Binance Futures "
                 "Testnet (environment != live and exchange.testnet = true)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _allow_list_must_be_collected(self) -> Self:
+        """A symbol the risk gate allows but the collector never fetches is a trap.
+
+        It would pass rule 1 and then fail rule 8 forever, so a scan spends its time on
+        an idea that can never be traded. Requiring the allow-list to be a subset of
+        the collected universe makes the two lists impossible to drift apart.
+        """
+        collected = set(self.market_data.symbols)
+        missing = sorted(set(self.risk.limits.allowed_symbols) - collected)
+        if missing:
+            raise ValueError(
+                "risk.limits.allowed_symbols must be a subset of market_data.symbols; "
+                f"not collected: {', '.join(missing)}"
             )
         return self
 

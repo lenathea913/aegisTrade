@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -190,22 +191,27 @@ def test_unknown_timeframe_is_rejected() -> None:
 
 
 def test_symbols_are_normalised_from_yaml() -> None:
-    settings = load_settings("paper", overrides={"market_data": {"symbols": ["eth-usdt"]}})
+    settings = load_settings(
+        "paper",
+        overrides={
+            "market_data": {"symbols": ["eth-usdt"]},
+            "risk": {"limits": {"allowed_symbols": ["eth-usdt"]}},
+        },
+    )
     assert settings.market_data.symbols == ("ETH/USDT",)
 
 
 # --------------------------------------------------------------------- alerting
 
 
-def test_alerting_disabled_by_default() -> None:
+def test_alerting_is_on_and_logs_when_no_channel_is_configured() -> None:
+    """Enabled without a channel is the safe default: recorded, not delivered."""
     alerting = load_settings("paper").alerting
-    assert alerting.enabled is False
+    assert alerting.enabled is True
     assert alerting.channels == ()
 
 
-def test_enabling_alerting_requires_a_complete_channel() -> None:
-    with pytest.raises(ValidationError, match="at least one entry"):
-        load_settings("paper", overrides={"alerting": {"enabled": True}})
+def test_naming_a_channel_still_requires_its_credentials() -> None:
     with pytest.raises(ValidationError, match="telegram"):
         load_settings(
             "paper",
@@ -264,6 +270,52 @@ def test_blank_telegram_chat_id_counts_as_missing() -> None:
 def test_blank_secret_is_treated_as_unset() -> None:
     settings = load_settings("paper", overrides={"exchange": {"api_key": "   ", "api_secret": ""}})
     assert settings.exchange.configured is False
+
+
+# ------------------------------------------------------- cross-section validation
+
+
+def test_a_symbol_allowed_but_not_collected_is_refused() -> None:
+    """Rule 1 would allow it and rule 8 would then refuse it forever: fail at startup."""
+    with pytest.raises(ValidationError, match=r"subset of market_data\.symbols"):
+        load_settings(
+            "paper",
+            overrides={"risk": {"limits": {"allowed_symbols": ["AVAX/USDT"]}}},
+        )
+
+
+def test_allowed_symbols_must_also_be_collected_after_a_market_data_override() -> None:
+    with pytest.raises(ValidationError, match="not collected: AVAX/USDT"):
+        load_settings(
+            "paper",
+            overrides={
+                "market_data": {"symbols": ["BTC/USDT"]},
+                "risk": {"limits": {"allowed_symbols": ["BTC/USDT", "AVAX/USDT"]}},
+            },
+        )
+
+
+# ---------------------------------------------------------------- strategy defaults
+
+
+def test_production_uses_the_safe_slow_profile() -> None:
+    settings = load_settings("paper")
+    assert settings.market_data.timeframes == (Timeframe.H1,)
+    assert settings.strategy.ema_fast == 50
+    assert settings.strategy.ema_slow == 200
+    assert settings.strategy.adx_threshold == Decimal("25")
+
+
+def test_the_dev_overlay_owns_the_stress_profile() -> None:
+    settings = load_settings("dev")
+    assert settings.market_data.timeframes == (Timeframe.M15,)
+    assert (settings.strategy.ema_fast, settings.strategy.ema_slow) == (3, 5)
+    assert settings.strategy.adx_threshold == Decimal("0")
+
+
+def test_ema_fast_must_be_shorter_than_slow() -> None:
+    with pytest.raises(ValidationError, match="shorter"):
+        load_settings("paper", overrides={"strategy": {"ema_fast": 200, "ema_slow": 50}})
 
 
 # --------------------------------------------------------------------- secrets

@@ -321,11 +321,16 @@ draft intent to `TradingPipeline`. It never builds an `ApprovedOrder` itself, an
 refuses to start when `execution.mode` is `live` while `execution.allow_live_orders` is
 false.
 
+The development stack runs the daemon itself: `trading_runner` and `order_reconciler`
+are compose services with `restart: unless-stopped` and a heartbeat healthcheck, so a
+crash is visible and recovers without a terminal on the host. `alert_bridge` forwards
+firing Prometheus safety rules to the same alerter.
+
 | Command | What it does |
 | --- | --- |
 | `make runner-once` | one entry scan + one monitor pass, JSON summary, then exit |
-| `make runner-start` | daemon on `configs/dev.yaml` |
-| `make runner-paper` | daemon on `configs/paper.yaml` |
+| `make runner-start` | daemon on `configs/dev.yaml`, in the foreground (debugging) |
+| `make runner-paper` | daemon on `configs/paper.yaml`, in the foreground |
 
 `position_monitor.use_live_price: true` makes the monitor act on the ledger's latest
 mark instead of waiting for a closed candle (default `false`, the paper-safe choice).
@@ -342,7 +347,7 @@ can be baked into a layer.
 
 ```bash
 make docker-build        # build aegis-trade:dev
-make compose-dev         # postgres + redis + migrate + api + collector + prometheus + grafana
+make compose-dev         # postgres + redis + migrate + api + collector + runner + reconciler + prometheus + grafana
 make paper               # same stack pinned to configs/paper.yaml
 make logs                # follow the paper stack
 make compose-down

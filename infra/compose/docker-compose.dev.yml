@@ -1,5 +1,5 @@
 # Development stack: Postgres, Redis, migrations, API, collector, mark streamer,
-# Prometheus, Grafana.
+# the trading daemons (runner, reconciler, alert bridge), Prometheus, Grafana.
 #
 # Everything runs from the same image (infra/docker/Dockerfile); only the command
 # differs. Secrets come from the environment with development-only defaults — never
@@ -121,6 +121,78 @@ services:
     healthcheck:
       disable: true
 
+  # ------------------------------------------------------------------ daemons
+  # The process that actually trades belongs in the stack, not in a terminal on the
+  # host: with a restart policy, a heartbeat healthcheck and its logs in one place, a
+  # crash at 03:00 is visible and recoverable instead of silent.
+  trading_runner:
+    <<: *app
+    command:
+      ["python", "-m", "trading_runner", "--heartbeat-file", "/tmp/aegis-runner-heartbeat"]
+    environment:
+      <<: *app-env
+      # Same public marks the API uses; the monitor then acts on real-time prices.
+      AEGIS_STREAMING__ENABLED: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Scheduler writes this every 10 s. A stale file means the loop stalled, not
+      # just that the container is running.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys; from aegis_observability.heartbeat import heartbeat_is_fresh; sys.exit(0 if heartbeat_is_fresh('/tmp/aegis-runner-heartbeat', 120) else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  order_reconciler:
+    <<: *app
+    command:
+      ["python", "-m", "order_reconciler", "--heartbeat-file", "/tmp/aegis-reconciler-heartbeat"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys; from aegis_observability.heartbeat import heartbeat_is_fresh; sys.exit(0 if heartbeat_is_fresh('/tmp/aegis-reconciler-heartbeat', 180) else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  alert_bridge:
+    <<: *app
+    command:
+      ["python", "-m", "alert_bridge", "--heartbeat-file", "/tmp/aegis-alert-bridge-heartbeat"]
+    depends_on:
+      prometheus:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys; from aegis_observability.heartbeat import heartbeat_is_fresh; sys.exit(0 if heartbeat_is_fresh('/tmp/aegis-alert-bridge-heartbeat', 180) else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   prometheus:
     image: prom/prometheus:v2.55.1
     restart: unless-stopped
@@ -131,6 +203,7 @@ services:
       - "9090:9090"
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - promdata:/prometheus
     depends_on:
       api:

@@ -37,7 +37,7 @@ from aegis_ledger import (
     PortfolioLedger,
     PositionProtection,
 )
-from aegis_observability import get_logger
+from aegis_observability import Metrics, get_logger
 from aegis_risk import RiskGate
 
 __all__ = ["PipelineResult", "TradingPipeline"]
@@ -86,9 +86,14 @@ class TradingPipeline:
         ledger: PortfolioLedger,
         writer: LedgerWriter | None = None,
         alerter: Alerter | None = None,
+        metrics: Metrics | None = None,
     ) -> None:
         self._gate = gate
         self._alerter = alerter
+        #: Optional because the API/test paths do not need counters; a daemon does.
+        #: Without this the ``RiskRejected`` alert rule would query a metric that no
+        #: process ever increments.
+        self._metrics = metrics
         self._gateway = gateway
         self._ledger = ledger
         self._writer = writer
@@ -103,6 +108,8 @@ class TradingPipeline:
         state = self._ledger.snapshot(now=market.now)
         # The gate owns risk rejections (kill switch, daily loss included).
         decision = self._gate.evaluate(intent, state, market, alerter=self._alerter)
+        if self._metrics is not None:
+            self._metrics.record_decision(decision.approved, decision.reasons)
 
         if not decision.approved:
             # A rejection is the gate doing its job. Log it at INFO with a next step,
@@ -209,6 +216,8 @@ class TradingPipeline:
         order = execution.order
 
         if execution.trade is None:
+            if self._metrics is not None:
+                self._metrics.record_order("not_filled")
             events.append(
                 AuditEvent(
                     event_type=EventType.ORDER_NOT_FILLED,
@@ -233,6 +242,9 @@ class TradingPipeline:
             )
 
         trade = execution.trade
+        if self._metrics is not None:
+            self._metrics.record_order("filled")
+            self._metrics.record_trade(trade.symbol, trade.side.value)
         events.append(
             AuditEvent(
                 event_type=EventType.ORDER_SUBMITTED,

@@ -68,6 +68,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["aegis_core", "aegis_strategy", "aegis_backtest", "aegis_risk",
+                      "alert_bridge",
                       "aegis_metrics", "aegis_db", "aegis_config", "aegis_observability",
                       "aegis_execution", "aegis_ledger", "aegis_alerting", "api",
                       "market_collector", "position_monitor", "signal_service",

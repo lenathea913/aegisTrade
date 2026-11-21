@@ -4,6 +4,18 @@
 # The freshness window is derived per timeframe (1h -> 3720 s), not pinned here.
 market_data:
   source: binance
+  # STRESS TEST MODE: 15m bars exercise the runner, the protective exits and the
+  # Activity feed several times an hour instead of a few times a day. This is a
+  # development cadence only and must not move into base.yaml.
+  timeframes:
+    - 15m
+
+strategy:
+  # A 3/5 cross with no ADX floor fires constantly on 15m bars. It drives the
+  # execution path hard; it is not a strategy to trade.
+  ema_fast: 3
+  ema_slow: 5
+  adx_threshold: 0
 
 # Protect on real-time streamer marks, not only on the bar that already closed.
 position_monitor:

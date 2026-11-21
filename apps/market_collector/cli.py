@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from aegis_config import Settings, load_settings
+from aegis_config import MarketType, Settings, load_settings
 from aegis_db import create_engine_from_settings, create_session_factory, session_scope
 from aegis_observability import configure_logging, get_logger
 from market_collector.collector import DEFAULT_LIMIT, CollectionSummary, MarketCollector
@@ -26,12 +26,22 @@ from market_collector.retry import RetryPolicy
 from market_collector.sources import (
     BINANCE_MAINNET_BASE_URL,
     BINANCE_TESTNET_BASE_URL,
+    FUTURES_KLINES_PATH,
     CandleSource,
     build_source,
 )
 from market_collector.store import CandleStore
 
-__all__ = ["build_collector", "build_source_for", "klines_base_url", "main", "summary_payload"]
+SPOT_KLINES_PATH = "/api/v3/klines"
+
+__all__ = [
+    "build_collector",
+    "build_source_for",
+    "klines_base_url",
+    "klines_endpoint",
+    "main",
+    "summary_payload",
+]
 
 
 def klines_base_url(settings: Settings) -> str:
@@ -46,12 +56,27 @@ def klines_base_url(settings: Settings) -> str:
     return configured
 
 
+def klines_endpoint(settings: Settings) -> tuple[str, str]:
+    """Host **and** path the configured market needs.
+
+    Spot and USDT-M futures are different venues with different prices, so a futures
+    run must not fetch ``/api/v3/klines`` from the spot host: that stores spot bars in
+    the futures series (and used to be invisible, before ``venue`` existed).
+    """
+    if settings.execution.market_type is MarketType.FUTURES:
+        return settings.exchange.futures_base_url.rstrip("/"), FUTURES_KLINES_PATH
+    return klines_base_url(settings), SPOT_KLINES_PATH
+
+
 def build_source_for(settings: Settings) -> CandleSource:
+    base_url, klines_path = klines_endpoint(settings)
     return build_source(
         settings.market_data.source,
         csv_dir=settings.market_data.csv_dir,
         timeout_seconds=settings.market_data.request_timeout_seconds,
-        base_url=klines_base_url(settings),
+        base_url=base_url,
+        klines_path=klines_path,
+        venue=settings.execution.market_type.value,
     )
 
 
@@ -71,6 +96,7 @@ def build_collector(
         timeframes=settings.market_data.timeframes,
         exchange=settings.market_data.exchange,
         environment=settings.exchange.environment,
+        venue=settings.execution.market_type.value,
         limit=limit or DEFAULT_LIMIT,
         retry=retry,
     )
@@ -124,11 +150,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger = get_logger("aegis.collector")
     # Say which source this process uses, so a mis-wired env var is visible in the log
     # instead of being inferred from stale candles hours later.
+    base_url, klines_path = klines_endpoint(settings)
     logger.info(
         "collector_started",
         source=settings.market_data.source,
         source_class=type(build_source_for(settings)).__name__,
-        klines_base_url=klines_base_url(settings),
+        klines_base_url=base_url,
+        klines_path=klines_path,
+        venue=settings.execution.market_type.value,
         testnet=settings.exchange.testnet,
         environment=settings.exchange.environment,
         symbols=list(settings.market_data.symbols),

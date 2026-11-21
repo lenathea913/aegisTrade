@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
+import pytest
 from sqlalchemy import create_mock_engine
 from sqlalchemy.engine import Dialect
 from sqlalchemy.engine.mock import MockConnection
@@ -70,14 +71,48 @@ class RecordingSession:
         return _Result(self.returned)
 
 
-def test_rows_carry_exchange_environment_source_and_domain_values() -> None:
-    rows = candle_rows([make_candle()], exchange="binance", source="binance", environment="testnet")
+def test_rows_carry_exchange_environment_venue_source_and_domain_values() -> None:
+    rows = candle_rows(
+        [make_candle()],
+        exchange="binance",
+        source="binance",
+        environment="testnet",
+        venue="futures",
+    )
 
     assert rows[0]["exchange"] == "binance"
     assert rows[0]["environment"] == "testnet"
+    assert rows[0]["venue"] == "futures"
     assert rows[0]["source"] == "binance"
     assert rows[0]["timeframe"] == "1h"
     assert rows[0]["trades"] == 7
+
+
+def test_an_unknown_venue_is_refused_before_the_database_sees_it() -> None:
+    with pytest.raises(ValueError, match="venue must be one of"):
+        candle_rows(
+            [make_candle()],
+            exchange="binance",
+            source="csv",
+            environment="testnet",
+            venue="perpetual",
+        )
+
+
+def test_the_same_bar_in_two_markets_is_two_rows() -> None:
+    """Spot and futures for one minute are different prices, so they are separate rows."""
+    candle = make_candle()
+
+    spot = candle_rows(
+        [candle], exchange="binance", source="exchange", environment="testnet", venue="spot"
+    )
+    futures = candle_rows(
+        [candle], exchange="binance", source="exchange", environment="testnet", venue="futures"
+    )
+
+    assert len(spot) == 1
+    assert len(futures) == 1
+    assert spot[0]["venue"] != futures[0]["venue"]
 
 
 def test_duplicate_bars_in_one_batch_are_collapsed() -> None:
@@ -86,6 +121,7 @@ def test_duplicate_bars_in_one_batch_are_collapsed() -> None:
         exchange="binance",
         source="csv",
         environment="testnet",
+        venue="spot",
     )
 
     assert len(rows) == 2
@@ -93,12 +129,16 @@ def test_duplicate_bars_in_one_batch_are_collapsed() -> None:
 
 def test_upsert_uses_the_natural_key_and_do_nothing() -> None:
     statement = build_upsert(
-        [make_candle()], exchange="binance", source="binance", environment="testnet"
+        [make_candle()],
+        exchange="binance",
+        source="binance",
+        environment="testnet",
+        venue="futures",
     )
     sql = str(statement.compile(dialect=postgres_dialect()))
 
     assert "INSERT INTO market.candles" in sql
-    assert "ON CONFLICT (environment, symbol, timeframe, open_time) DO NOTHING" in sql
+    assert "ON CONFLICT (environment, venue, symbol, timeframe, open_time) DO NOTHING" in sql
 
 
 def test_upsert_counts_rows_returned_by_the_statement() -> None:
@@ -110,6 +150,7 @@ def test_upsert_counts_rows_returned_by_the_statement() -> None:
         exchange="binance",
         source="csv",
         environment="testnet",
+        venue="spot",
     )
 
     assert inserted == 2
@@ -121,7 +162,11 @@ def test_upsert_runs_inside_a_savepoint() -> None:
     session = RecordingSession(returned=1)
 
     CandleStore(cast(Session, session)).upsert(
-        [make_candle()], exchange="binance", source="csv", environment="testnet"
+        [make_candle()],
+        exchange="binance",
+        source="csv",
+        environment="testnet",
+        venue="spot",
     )
 
     assert session.savepoints == 1
@@ -131,7 +176,16 @@ def test_empty_batch_skips_the_database() -> None:
     session = RecordingSession()
     store = CandleStore(cast(Session, session))
 
-    assert store.upsert([], exchange="binance", source="csv", environment="testnet") == 0
+    assert (
+        store.upsert(
+            [],
+            exchange="binance",
+            source="csv",
+            environment="testnet",
+            venue="spot",
+        )
+        == 0
+    )
     assert session.statements == []
 
 
@@ -140,7 +194,11 @@ def test_conflicting_batch_inserts_nothing_and_counts_zero() -> None:
     session = RecordingSession(returned=0)
 
     inserted = CandleStore(cast(Session, session)).upsert(
-        [make_candle()], exchange="binance", source="csv", environment="testnet"
+        [make_candle()],
+        exchange="binance",
+        source="csv",
+        environment="testnet",
+        venue="spot",
     )
 
     assert inserted == 0

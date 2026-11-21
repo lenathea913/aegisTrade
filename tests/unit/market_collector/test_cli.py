@@ -18,12 +18,15 @@ from market_collector.cli import (
     build_collector,
     build_source_for,
     klines_base_url,
+    klines_endpoint,
     summary_payload,
 )
 from market_collector.collector import CollectionSummary, SeriesResult
 from market_collector.sources import (
     BINANCE_MAINNET_BASE_URL,
     BINANCE_TESTNET_BASE_URL,
+    FUTURES_KLINES_PATH,
+    BinanceFuturesSource,
     BinanceKlineSource,
     CsvCandleSource,
 )
@@ -65,6 +68,7 @@ def test_collector_is_built_from_settings() -> None:
     collector = build_collector(settings, cast(Session, object()))
 
     assert collector.source_kind == "BinanceKlineSource"
+    assert settings.execution.market_type.value == "spot"
 
 
 def test_csv_remains_an_explicit_choice() -> None:
@@ -105,6 +109,33 @@ def test_klines_follow_the_exchange_environment() -> None:
     # ``exchange.base_url`` defaults to testnet; ``testnet: false`` must still mean mainnet.
     assert klines_base_url(mainnet) == BINANCE_MAINNET_BASE_URL
     assert klines_base_url(explicit) == "https://api.binance.com"
+
+
+def test_futures_collects_the_contract_not_the_spot_feed() -> None:
+    """``market_type: futures`` must read /fapi prices, and label them ``futures``."""
+    settings = load_settings("dev", overrides={"execution": {"market_type": "futures"}})
+
+    base_url, klines_path = klines_endpoint(settings)
+    source = build_source_for(settings)
+
+    assert base_url == settings.exchange.futures_base_url
+    assert klines_path == FUTURES_KLINES_PATH
+    assert isinstance(source, BinanceFuturesSource)
+    assert source.venue == "futures"
+    source.close()
+
+
+def test_spot_collects_the_spot_feed_and_says_so() -> None:
+    settings = load_settings("dev")
+
+    base_url, klines_path = klines_endpoint(settings)
+    source = build_source_for(settings)
+
+    assert base_url == BINANCE_TESTNET_BASE_URL
+    assert klines_path == "/api/v3/klines"
+    assert isinstance(source, BinanceKlineSource)
+    assert source.venue == "spot"
+    source.close()
 
 
 def test_an_unknown_source_fails_loudly(tmp_path: Path) -> None:

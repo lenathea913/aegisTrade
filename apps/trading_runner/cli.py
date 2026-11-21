@@ -125,7 +125,11 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
     signals = SignalService(
         gate=RiskGate.from_settings(settings),
         ledger=ledger,
-        candles=SqlCandleRepository(factory, environment=settings.exchange.environment),
+        candles=SqlCandleRepository(
+            factory,
+            environment=settings.exchange.environment,
+            venue=settings.execution.market_type.value,
+        ),
         symbols=settings.market_data.symbols,
         timeframe=settings.market_data.timeframes[0],
         # Persisted, so a restart continues the same run instead of re-announcing bars.
@@ -135,8 +139,12 @@ def build_runner(settings: Settings, factory: sessionmaker[Session]) -> TradingR
         settings=settings,
         ledger=ledger,
         signals=signals,
-        candles=SqlLatestCandleSource(factory, environment=settings.exchange.environment),
-        quotes=CandleQuoteSource(factory, environment=settings.exchange.environment),
+        candles=SqlLatestCandleSource(
+            factory,
+            environment=settings.exchange.environment,
+            venue=settings.execution.market_type.value,
+        ),
+        quotes=CandleQuoteSource.from_settings(settings, factory),
         writer_factory=lambda: _writer(factory),
         live_quotes=live_quote_source(settings, factory),
         alerter=alerter,

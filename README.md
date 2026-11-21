@@ -170,11 +170,13 @@ installs a trigger that rejects `UPDATE`, `DELETE` and `TRUNCATE`.
 
 `apps/market_collector` is the only writer of `market.candles`. One pass fetches the
 latest closed bars for every configured symbol/timeframe and inserts them with
-`ON CONFLICT (environment, symbol, timeframe, open_time) DO NOTHING`, so re-runs,
+`ON CONFLICT (environment, venue, symbol, timeframe, open_time) DO NOTHING`, so re-runs,
 overlapping windows and restarts can never duplicate or rewrite a bar. The
 `environment` column (`testnet`/`mainnet`) is part of that key: testnet prices can
-never be read back as mainnet history. `make clean-db` empties the table so a fresh
-collector pass refills it from a single venue.
+never be read back as mainnet history. So is `venue` (`spot`/`futures`): a spot kline
+and a USDT-M perpetual kline for the same minute are different prices, so they are
+different series and every reader filters on `execution.market_type`. `make clean-db`
+empties the table so a fresh collector pass refills it from a single venue.
 
 ```bash
 make collector-once   # one pass, then exit

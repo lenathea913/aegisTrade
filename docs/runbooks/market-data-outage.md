@@ -19,9 +19,9 @@ Database view:
 ```bash
 docker compose -f infra/compose/docker-compose.paper.yml exec postgres \
   psql -U aegis -d aegis -c \
-  "select environment, symbol, timeframe, max(close_time) as newest,
+  "select environment, venue, symbol, timeframe, max(close_time) as newest,
           now() - max(close_time) as lag
-   from market.candles group by 1, 2, 3 order by 1, 2;"
+   from market.candles group by 1, 2, 3, 4 order by 1, 2, 3;"
 ```
 
 ## 2. Diagnose

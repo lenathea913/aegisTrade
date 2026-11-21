@@ -27,17 +27,24 @@ class CandleRepository(Protocol):
 
 
 class SqlCandleRepository:
-    """Reads one venue's ``market.candles`` series; one short session per call.
+    """Reads one market's ``market.candles`` series; one short session per call.
 
     ``environment`` defaults to ``testnet`` because that is the only venue this project
     is allowed to trade today. Callers that hold settings pass
-    ``settings.exchange.environment`` explicitly, so a mainnet run never reads testnet
-    bars out of the same table.
+    ``settings.exchange.environment`` and ``settings.execution.market_type.value``, so a
+    mainnet run never reads testnet bars and a futures run never reads spot bars out of
+    the same table.
     """
 
-    def __init__(self, factory: sessionmaker[Session], environment: str = "testnet") -> None:
+    def __init__(
+        self,
+        factory: sessionmaker[Session],
+        environment: str = "testnet",
+        venue: str = "spot",
+    ) -> None:
         self._factory = factory
         self._environment = environment
+        self._venue = venue
 
     def recent(self, symbol: str, timeframe: Timeframe, limit: int) -> Sequence[Candle]:
         with session_scope(self._factory) as session:
@@ -46,6 +53,7 @@ class SqlCandleRepository:
                     select(CandleRow)
                     .where(
                         CandleRow.environment == self._environment,
+                        CandleRow.venue == self._venue,
                         CandleRow.symbol == symbol,
                         CandleRow.timeframe == timeframe.value,
                     )

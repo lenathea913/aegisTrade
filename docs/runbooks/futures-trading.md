@@ -143,9 +143,17 @@ PYTHONPATH="packages;apps" uv run python scripts/backfill_candles.py --target 10
 
 The default host is `testnet.binancefuture.com` (`/fapi/v1/klines`) because the spot
 testnet keeps only a few weeks of history and the futures contract is what the backtest
-trades. Re-running is free: existing bars are skipped, never duplicated. Note that the
-running collector still writes *spot* testnet klines into the same series, so recent
-bars may differ from the futures history by a fraction of a percent.
+trades. Re-running is free: existing bars are skipped, never duplicated.
+
+The script labels what it writes: `--venue futures` by default for a `/fapi` path, and
+`market.candles.venue` is part of the series key. The collector writes futures bars to
+the futures series too (it follows `execution.market_type` for both the host and the
+label), so the two markets no longer share a row — verify with:
+
+```bash
+psql -U aegis -d aegis -c "select venue, symbol, timeframe, count(*), max(close_time)
+  from market.candles group by 1, 2, 3 order by 1, 4 desc;"
+```
 
 `BacktestResult.liquidations` (alias `total_liquidations`) counts the forced exits, so a
 run tells you directly whether the stop was ever reached before the collateral.

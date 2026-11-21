@@ -42,6 +42,7 @@ from decimal import Decimal
 from backtest_data import load_from_database
 
 from aegis_backtest import BacktestConfig, run
+from aegis_config import load_settings
 from aegis_core import Candle, Side, Timeframe
 from aegis_strategy import EmaCrossParams, EmaCrossStrategy
 
@@ -92,12 +93,12 @@ def _checks(passed: bool, label: str, detail: str) -> str:
     return f"[{'PASS' if passed else 'FAIL'}] {label}: {detail}"
 
 
-def _load(symbol: str, environment: str) -> list[Candle]:
-    candles = load_from_database(symbol, TIMEFRAME, environment)
+def _load(symbol: str, environment: str, venue: str) -> list[Candle]:
+    candles = load_from_database(symbol, TIMEFRAME, environment, venue)
     if not candles:
         raise SystemExit(
-            f"no stored {TIMEFRAME.value} candles for {symbol} in environment "
-            f"{environment!r}; run the collector or scripts/backfill_candles.py first"
+            f"no stored {TIMEFRAME.value} candles for {symbol} in "
+            f"{environment}/{venue}; run the collector or scripts/backfill_candles.py first"
         )
     return candles
 
@@ -120,7 +121,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--environment",
         default="testnet",
-        help="venue tag of the stored candles (testnet|mainnet)",
+        help="deployment tag of the stored candles (testnet|mainnet)",
+    )
+    parser.add_argument(
+        "--venue",
+        choices=["spot", "futures"],
+        default=None,
+        help="market of the stored bars (default: execution.market_type)",
     )
     parser.add_argument(
         "--slippage-bps",
@@ -136,7 +143,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    stored = _load(args.symbol, args.environment)
+    venue = args.venue or load_settings().execution.market_type.value
+    stored = _load(args.symbol, args.environment, venue)
     # The audit needs trade #1, nothing after it: bars are processed in order, so a
     # longer replay cannot change an earlier trade. Replaying all 27 000 stored bars
     # would only make the script slower than the thing it is checking.
@@ -179,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"data          : audited {len(candles)} of {len(stored)} stored bars of"
-        f" {args.symbol} {TIMEFRAME.value} [{args.environment}]"
+        f" {args.symbol} {TIMEFRAME.value} [{args.environment}/{venue}]"
         f" {_stamp(candles[0].open_time)} -> {_stamp(candles[-1].close_time)}"
     )
     print(

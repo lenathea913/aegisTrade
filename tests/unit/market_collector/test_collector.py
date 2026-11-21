@@ -39,6 +39,7 @@ ETH = [make_candle(0, "ETH/USDT"), make_candle(1, "ETH/USDT")]
 
 class ListSource:
     label = "csv"
+    venue = "spot"
 
     def __init__(self, series: dict[str, Sequence[Candle]], failing: frozenset[str] = frozenset()):
         self._series = series
@@ -54,6 +55,7 @@ class ListSource:
 
 class FlakySource:
     label = "csv"
+    venue = "spot"
 
     def __init__(self, series: Sequence[Candle], failures: int) -> None:
         self._series = series
@@ -70,11 +72,19 @@ class RecordingWriter:
     def __init__(self) -> None:
         self.seen: set[tuple[str, str, datetime]] = set()
         self.calls: list[tuple[str, str, int]] = []
+        self.venues: list[str] = []
 
     def upsert(
-        self, candles: Sequence[Candle], *, exchange: str, source: str, environment: str
+        self,
+        candles: Sequence[Candle],
+        *,
+        exchange: str,
+        source: str,
+        environment: str,
+        venue: str,
     ) -> int:
         self.calls.append((exchange, source, len(candles)))
+        self.venues.append(venue)
         new = 0
         for candle in candles:
             key = (candle.symbol, candle.timeframe.value, candle.open_time)
@@ -98,6 +108,40 @@ def build(
         now=lambda: NOW,
         retry=retry,
     )
+
+
+def test_the_collector_labels_rows_with_its_configured_venue() -> None:
+    writer = RecordingWriter()
+
+    class FuturesSource(ListSource):
+        venue = "futures"
+
+    collector = MarketCollector(
+        source=FuturesSource({"BTC/USDT": BTC}),
+        store=writer,
+        symbols=("BTC/USDT",),
+        timeframes=(Timeframe.H1,),
+        venue="futures",
+        now=lambda: NOW,
+    )
+
+    collector.run_once()
+
+    assert writer.venues == ["futures"]
+
+
+def test_a_source_that_declares_another_market_is_refused() -> None:
+    """A spot feed labelled futures would put spot prices in the futures series."""
+
+    with pytest.raises(ValueError, match="writes spot bars"):
+        MarketCollector(
+            source=ListSource({"BTC/USDT": BTC}),
+            store=RecordingWriter(),
+            symbols=("BTC/USDT",),
+            timeframes=(Timeframe.H1,),
+            venue="futures",
+            now=lambda: NOW,
+        )
 
 
 def test_run_reports_totals_and_lag() -> None:
@@ -169,7 +213,13 @@ def test_empty_source_result_is_reported() -> None:
 def test_store_failures_are_reported() -> None:
     class BrokenWriter:
         def upsert(
-            self, candles: Sequence[Candle], *, exchange: str, source: str, environment: str
+            self,
+            candles: Sequence[Candle],
+            *,
+            exchange: str,
+            source: str,
+            environment: str,
+            venue: str,
         ) -> int:
             raise RuntimeError("database unavailable")
 

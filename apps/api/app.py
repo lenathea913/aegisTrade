@@ -200,7 +200,11 @@ def create_app(
         signals = SignalService(
             gate=RiskGate.from_settings(settings),
             ledger=service.ledger,
-            candles=SqlCandleRepository(session_factory, environment=settings.exchange.environment),
+            candles=SqlCandleRepository(
+                session_factory,
+                environment=settings.exchange.environment,
+                venue=settings.execution.market_type.value,
+            ),
             symbols=settings.market_data.symbols,
             timeframe=settings.market_data.timeframes[0],
             store=SqlSignalStore(session_factory),
@@ -213,7 +217,7 @@ def create_app(
     activity_reader = activity
 
     quotes = (
-        CandleQuoteSource(session_factory, environment=settings.exchange.environment)
+        CandleQuoteSource.from_settings(settings, session_factory)
         if session_factory is not None
         else None
     )

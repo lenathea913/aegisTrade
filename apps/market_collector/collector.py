@@ -75,6 +75,7 @@ class MarketCollector:
         timeframes: Sequence[Timeframe],
         exchange: str = "binance",
         environment: str = "testnet",
+        venue: str = "spot",
         limit: int = DEFAULT_LIMIT,
         retry: RetryPolicy | None = None,
         now: Callable[[], datetime] = utc_now,
@@ -83,12 +84,22 @@ class MarketCollector:
             raise ValueError("collector needs at least one symbol")
         if not timeframes:
             raise ValueError("collector needs at least one timeframe")
+        # A source that knows its market (the Binance ones do) must agree with the
+        # configuration. A spot feed labelled "futures" would put the wrong prices in
+        # the futures series, which is exactly the bug ``venue`` exists to prevent.
+        declared: object = getattr(source, "venue", None)
+        if declared is not None and declared != venue:
+            raise ValueError(
+                f"{type(source).__name__} writes {declared} bars but the collector is "
+                f"configured for {venue!r}"
+            )
         self._source = source
         self._store = store
         self._symbols = tuple(symbols)
         self._timeframes = tuple(timeframes)
         self._exchange = exchange
         self._environment = environment
+        self._venue = venue
         self._limit = limit
         self._retry = retry or RetryPolicy()
         self._now = now
@@ -126,6 +137,7 @@ class MarketCollector:
                 exchange=self._exchange,
                 source=self._source.label,
                 environment=self._environment,
+                venue=self._venue,
             )
         except Exception as exc:
             return SeriesResult(

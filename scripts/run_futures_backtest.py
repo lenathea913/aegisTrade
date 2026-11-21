@@ -47,7 +47,9 @@ DEFAULT_CSV = Path("data/seeds/BTCUSDT_1h.csv")
 DEFAULT_SYMBOL = "BTC/USDT"
 
 
-def _load_from_database(symbol: str, timeframe: Timeframe, environment: str) -> tuple[Candle, ...]:
+def _load_from_database(
+    symbol: str, timeframe: Timeframe, environment: str, venue: str
+) -> tuple[Candle, ...]:
     """Read one series from ``market.candles`` (the same table the runner trades)."""
     from sqlalchemy import select
 
@@ -67,6 +69,7 @@ def _load_from_database(symbol: str, timeframe: Timeframe, environment: str) -> 
                         CandleRow.symbol == symbol,
                         CandleRow.timeframe == timeframe.value,
                         CandleRow.environment == environment,
+                        CandleRow.venue == venue,
                     )
                     .order_by(CandleRow.open_time)
                 )
@@ -242,12 +245,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="ignore SELL signals (spot behaviour); futures runs allow shorts by default",
     )
+    parser.add_argument(
+        "--venue",
+        choices=["spot", "futures"],
+        default=None,
+        help="market of the stored bars (default: execution.market_type)",
+    )
     args = parser.parse_args(argv)
 
     timeframe = Timeframe(args.timeframe)
     if args.from_db:
-        candles = _load_from_database(args.symbol, timeframe, args.environment)
-        source = f"market.candles ({args.environment})"
+        from aegis_config import load_settings
+
+        venue = args.venue or load_settings().execution.market_type.value
+        candles = _load_from_database(args.symbol, timeframe, args.environment, venue)
+        source = f"market.candles ({args.environment}/{venue})"
     else:
         candles = load_candles_csv(args.csv, symbol=args.symbol, timeframe=timeframe)
         source = str(args.csv)

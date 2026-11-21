@@ -56,8 +56,8 @@ configured venue):
 ```bash
 docker compose -f infra/compose/docker-compose.paper.yml exec postgres \
   psql -U aegis -d aegis -c \
-  "select environment, symbol, timeframe, count(*), max(close_time)
-   from market.candles group by 1, 2, 3;"
+  "select environment, venue, symbol, timeframe, count(*), max(close_time)
+   from market.candles group by 1, 2, 3, 4 order by 1, 2, 3;"
 ```
 
 ## 4. Stop

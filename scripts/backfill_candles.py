@@ -45,6 +45,7 @@ def backfill(
     timeframe: Timeframe,
     target: int,
     environment: str,
+    venue: str,
     exchange: str = "binance",
     page_limit: int = PAGE_LIMIT,
     after_page: object = None,
@@ -70,6 +71,7 @@ def backfill(
             exchange=exchange,
             source=source.label,
             environment=environment,
+            venue=venue,
         )
         fetched += len(candles)
         oldest = candles[0].open_time
@@ -105,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default=FUTURES_TESTNET_BASE_URL)
     parser.add_argument("--path", default=FUTURES_KLINES_PATH)
     parser.add_argument("--environment", default=None, help="defaults to the configured one")
+    parser.add_argument(
+        "--venue",
+        choices=["spot", "futures"],
+        default=None,
+        help="market these bars belong to (default: futures for /fapi paths, else spot)",
+    )
     parser.add_argument("--exchange", default="binance")
     parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
@@ -112,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     timeframe = Timeframe(args.timeframe)
     settings = load_settings()
     environment = args.environment or settings.exchange.environment
+    # The endpoint decides the market unless the operator says otherwise: a /fapi path
+    # is a perpetual contract, /api/v3 is spot. Labelling both "spot" is exactly how
+    # the two series got mixed before ``venue`` existed.
+    venue = args.venue or ("futures" if "fapi" in args.path else "spot")
 
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)
@@ -137,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             timeframe=timeframe,
             target=args.target,
             environment=environment,
+            venue=venue,
             exchange=args.exchange,
             page_limit=max(1, min(args.page_limit, 1000)),
             after_page=report,
@@ -145,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     engine.dispose()
     print(
         f"{args.symbol} {timeframe.value}: fetched {fetched}, inserted {inserted} "
-        f"into {environment} from {args.base_url}{args.path}"
+        f"into {environment}/{venue} from {args.base_url}{args.path}"
     )
     if fetched < args.target:
         print(

@@ -125,7 +125,7 @@ def build_monitor(
     return PositionMonitor(
         ledger=book,
         pipeline=pipeline,
-        quotes=CandleQuoteSource(factory, environment=settings.exchange.environment),
+        quotes=CandleQuoteSource.from_settings(settings, factory),
         use_live_price=settings.position_monitor.use_live_price,
         live_quotes=live_quote_source(settings, factory),
         protect_take_profit=settings.position_monitor.protect_take_profit,

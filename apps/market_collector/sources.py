@@ -10,6 +10,11 @@ Two implementations, one protocol:
 
 Sources only *fetch*. Persisting, retrying and lag accounting belong to the
 collector, which keeps this module free of database concerns.
+
+Every source also declares the **venue** its bars belong to (``spot`` or
+``futures``). Spot klines and USDT-M perpetual klines for the same minute are different
+prices, and ``market.candles.venue`` is part of the series key, so a source that does
+not say which market it read cannot be stored unambiguously.
 """
 
 from __future__ import annotations
@@ -27,6 +32,9 @@ from aegis_core import Candle, Timeframe, utc_now
 
 __all__ = [
     "BINANCE_MAINNET_BASE_URL",
+    "BINANCE_TESTNET_BASE_URL",
+    "FUTURES_TESTNET_BASE_URL",
+    "BinanceFuturesSource",
     "BinanceKlineSource",
     "CandleSource",
     "CollectorError",
@@ -39,6 +47,12 @@ __all__ = [
 #: exchange environment so a testnet run never mixes prices with mainnet.
 BINANCE_MAINNET_BASE_URL = "https://api.binance.com"
 BINANCE_TESTNET_BASE_URL = "https://testnet.binance.vision"
+#: USDT-M perpetual klines. Futures has its own host and its own path.
+FUTURES_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
+FUTURES_KLINES_PATH = "/fapi/v1/klines"
+
+#: The two series a candle can belong to. Mirrors the ``market.candles.venue`` CHECK.
+VENUES: frozenset[str] = frozenset({"spot", "futures"})
 
 
 class CollectorError(RuntimeError):
@@ -51,6 +65,10 @@ class CandleSource(Protocol):
     @property
     def label(self) -> str:
         """Short tag stored in ``market.candles.source`` (``csv`` / ``exchange``)."""
+
+    @property
+    def venue(self) -> str:
+        """Market the bars belong to, stored in ``market.candles.venue``."""
 
     def fetch(self, symbol: str, timeframe: Timeframe, limit: int) -> Sequence[Candle]:
         """Return up to ``limit`` most recent closed candles, oldest first."""
@@ -66,6 +84,11 @@ class CsvCandleSource:
     @property
     def label(self) -> str:
         return "csv"
+
+    @property
+    def venue(self) -> str:
+        """Seeds are synthetic spot data: there is no contract behind them."""
+        return "spot"
 
     def path_for(self, symbol: str, timeframe: Timeframe) -> Path:
         base = symbol.replace("/", "").replace("-", "").upper()
@@ -98,20 +121,30 @@ class BinanceKlineSource:
         *,
         base_url: str = "https://api.binance.com",
         klines_path: str = "/api/v3/klines",
+        venue: str = "spot",
         client: httpx.Client | None = None,
         timeout_seconds: float = 10.0,
     ) -> None:
+        if venue not in VENUES:
+            raise ValueError(f"venue must be one of {sorted(VENUES)}, got {venue!r}")
         self._base_url = base_url.rstrip("/")
         # Spot uses ``/api/v3/klines``; USDT-M futures use ``/fapi/v1/klines``. The
         # path is a parameter so a futures backfill reads the contract it trades
         # instead of spot prices that merely look similar.
         self._klines_path = klines_path
+        #: Written to ``market.candles.venue``: the label that keeps the two markets
+        #: from ever being read as one series.
+        self._venue = venue
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout_seconds)
 
     @property
     def label(self) -> str:
         return "exchange"
+
+    @property
+    def venue(self) -> str:
+        return self._venue
 
     def close(self) -> None:
         if self._owns_client:
@@ -197,12 +230,38 @@ class BinanceKlineSource:
         return sorted(candles, key=lambda candle: candle.open_time)
 
 
+class BinanceFuturesSource(BinanceKlineSource):
+    """USDT-M perpetual klines from the futures host (``/fapi/v1/klines``).
+
+    Same wire format as spot, different contract and different prices. It exists as its
+    own class so "which market is this?" is answerable from the type, not from a URL
+    string a reader has to decode.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str = FUTURES_TESTNET_BASE_URL,
+        client: httpx.Client | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        super().__init__(
+            base_url=base_url,
+            klines_path=FUTURES_KLINES_PATH,
+            venue="futures",
+            client=client,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def build_source(
     source: str,
     *,
     csv_dir: Path | str,
     timeout_seconds: float = 10.0,
     base_url: str = BINANCE_MAINNET_BASE_URL,
+    klines_path: str = "/api/v3/klines",
+    venue: str = "spot",
 ) -> CandleSource:
     """Factory used by the CLI and the paper stack.
 
@@ -213,8 +272,15 @@ def build_source(
     if source == "csv":
         return CsvCandleSource(csv_dir)
     if source in {"exchange", "binance"}:
+        if venue == "futures":
+            return BinanceFuturesSource(
+                base_url=base_url,
+                timeout_seconds=timeout_seconds,
+            )
         return BinanceKlineSource(
             base_url=base_url,
+            klines_path=klines_path,
+            venue=venue,
             timeout_seconds=timeout_seconds,
         )
     raise ValueError(f"unknown market data source: {source!r}")

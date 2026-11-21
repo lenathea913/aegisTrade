@@ -12,6 +12,8 @@ import pytest
 
 from aegis_core import Timeframe
 from market_collector.sources import (
+    FUTURES_KLINES_PATH,
+    BinanceFuturesSource,
     BinanceKlineSource,
     CollectorError,
     CsvCandleSource,
@@ -76,6 +78,7 @@ def test_csv_source_resolves_the_expected_filename(tmp_path: Path) -> None:
 
     assert source.path_for("btc-usdt", Timeframe.H1).name == "BTCUSDT_1h.csv"
     assert source.label == "csv"
+    assert source.venue == "spot"
 
 
 def test_csv_source_returns_the_most_recent_candles(tmp_path: Path) -> None:
@@ -210,6 +213,40 @@ def test_binance_uses_the_configured_klines_path() -> None:
         source.fetch("BTC/USDT", Timeframe.H1, 1)
 
     assert requests[0].url.path == "/fapi/v1/klines"
+
+
+def test_spot_klines_are_labelled_spot_by_default() -> None:
+    source = BinanceKlineSource(client=make_client(lambda _: httpx.Response(200, json=[])))
+
+    assert source.venue == "spot"
+    source.close()
+
+
+def test_the_futures_source_asks_the_futures_host_and_is_labelled_futures() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[KLINE])
+
+    with BinanceFuturesSource(client=make_client(handler)) as source:
+        source.fetch("BTC/USDT", Timeframe.H1, 1)
+
+        assert source.venue == "futures"
+    assert requests[0].url.path == FUTURES_KLINES_PATH
+
+
+def test_an_unknown_venue_is_refused() -> None:
+    with pytest.raises(ValueError, match="venue must be one of"):
+        BinanceKlineSource(venue="margin")
+
+
+def test_build_source_for_futures_returns_the_futures_source() -> None:
+    source = build_source("binance", csv_dir="unused", venue="futures")
+
+    assert isinstance(source, BinanceFuturesSource)
+    assert source.venue == "futures"
+    source.close()
 
 
 def test_binance_does_not_close_a_client_it_does_not_own() -> None:

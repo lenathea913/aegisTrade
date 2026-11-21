@@ -80,9 +80,11 @@ and startup logs `api_auth_disabled`. Comparisons use `hmac.compare_digest`.
 
 ## Data model
 
-- `market.candles` — primary key `(environment, symbol, timeframe, open_time)`,
-  `ON CONFLICT DO NOTHING` on ingest, so re-runs can never duplicate a bar and testnet
-  bars never mix with mainnet bars.
+- `market.candles` — primary key `(environment, venue, symbol, timeframe, open_time)`,
+  `ON CONFLICT DO NOTHING` on ingest, so re-runs can never duplicate a bar, testnet
+  bars never mix with mainnet bars, and spot klines never mix with USDT-M perpetual
+  klines (different prices for the same minute). Readers filter on
+  `execution.market_type`.
 - `trading.orders` — the submitted order **plus the approval evidence** (approval id,
   risk checks, max risk amount, stop, take profit), so an order can be explained
   after limits change.

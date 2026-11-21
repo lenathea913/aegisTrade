@@ -110,11 +110,11 @@ def _schema_checks(dsn: str) -> None:
             )
 
         candle_sql = (
-            "insert into market.candles (exchange, environment, symbol, timeframe, open_time, "
-            "close_time, open, high, low, close, volume, trades, source) values "
-            "('binance', 'testnet', 'BTC/USDT', '1h', '2026-01-01T00:00:00+00', "
+            "insert into market.candles (exchange, environment, venue, symbol, timeframe, "
+            "open_time, close_time, open, high, low, close, volume, trades, source) values "
+            "('binance', 'testnet', 'futures', 'BTC/USDT', '1h', '2026-01-01T00:00:00+00', "
             "'2026-01-01T01:00:00+00', 100, 101, 99, 100.5, 10, 5, 'verify') "
-            "on conflict (environment, symbol, timeframe, open_time) do nothing"
+            "on conflict (environment, venue, symbol, timeframe, open_time) do nothing"
         )
         cursor.execute("delete from market.candles where source = 'verify'")
         cursor.execute(candle_sql)

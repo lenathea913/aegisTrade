@@ -46,6 +46,7 @@ def test_candles_use_the_natural_key_for_idempotent_inserts() -> None:
     table = table_of(Candle)
     assert [column.name for column in table.primary_key.columns] == [
         "environment",
+        "venue",
         "symbol",
         "timeframe",
         "open_time",
@@ -76,6 +77,7 @@ def test_candle_checks_cover_timeframes_and_ohlc_sanity() -> None:
     }
     assert checks == {
         "ck_candles_environment_known",
+        "ck_candles_venue_known",
         "ck_candles_timeframe_known",
         "ck_candles_open_before_close",
         "ck_candles_ohlc_bounds",

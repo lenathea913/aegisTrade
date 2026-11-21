@@ -81,16 +81,35 @@ def live_quote_source(settings: Any, factory: sessionmaker[Session]) -> QuoteSou
     return MarkStoreQuoteSource(
         store,
         max_age_seconds=settings.streaming.mark_ttl_seconds,
-        fallback=CandleQuoteSource(factory, environment=settings.exchange.environment),
+        fallback=CandleQuoteSource.from_settings(settings, factory),
     )
 
 
 class CandleQuoteSource:
-    """Reads the newest stored candle for a symbol, from one venue only."""
+    """Reads the newest stored candle for a symbol, from one venue only.
 
-    def __init__(self, factory: sessionmaker[Session], environment: str = "testnet") -> None:
+    ``venue`` is the market, not the environment: a futures monitor must never trigger
+    a stop on a spot price that merely shares the minute.
+    """
+
+    def __init__(
+        self,
+        factory: sessionmaker[Session],
+        environment: str = "testnet",
+        venue: str = "spot",
+    ) -> None:
         self._factory = factory
         self._environment = environment
+        self._venue = venue
+
+    @classmethod
+    def from_settings(cls, settings: Any, factory: sessionmaker[Session]) -> CandleQuoteSource:
+        """The source the configured market needs (``execution.market_type``)."""
+        return cls(
+            factory,
+            environment=settings.exchange.environment,
+            venue=settings.execution.market_type.value,
+        )
 
     def latest(self, symbol: str) -> MarketQuote | None:
         with session_scope(self._factory) as session:
@@ -99,6 +118,7 @@ class CandleQuoteSource:
                     select(CandleRow)
                     .where(
                         CandleRow.environment == self._environment,
+                        CandleRow.venue == self._venue,
                         CandleRow.symbol == symbol,
                     )
                     .order_by(CandleRow.close_time.desc())

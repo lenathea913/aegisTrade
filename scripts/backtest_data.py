@@ -56,8 +56,19 @@ def _to_datetime(stamp: int) -> datetime:
     return datetime.fromtimestamp(seconds, UTC)
 
 
-def load_from_database(symbol: str, timeframe: Timeframe, environment: str) -> list[Candle]:
-    """Every stored bar for ``symbol``/``timeframe``, oldest first."""
+def load_from_database(
+    symbol: str,
+    timeframe: Timeframe,
+    environment: str,
+    venue: str | None = None,
+) -> list[Candle]:
+    """Every stored bar for one market series, oldest first.
+
+    ``venue`` (``spot``/``futures``) defaults to ``execution.market_type`` — the market
+    the platform trades. It is a filter, not a label: spot and USDT-M perpetual bars for
+    the same symbol and minute are different prices, and reading both as one series
+    silently changes every result computed from it.
+    """
     from sqlalchemy import select
 
     from aegis_config import load_settings
@@ -65,6 +76,7 @@ def load_from_database(symbol: str, timeframe: Timeframe, environment: str) -> l
     from aegis_db import create_engine_from_settings, create_session_factory, session_scope
 
     settings = load_settings()
+    market = venue or settings.execution.market_type.value
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)
     try:
@@ -76,6 +88,7 @@ def load_from_database(symbol: str, timeframe: Timeframe, environment: str) -> l
                         CandleRow.symbol == symbol,
                         CandleRow.timeframe == timeframe.value,
                         CandleRow.environment == environment,
+                        CandleRow.venue == market,
                     )
                     .order_by(CandleRow.open_time)
                 )

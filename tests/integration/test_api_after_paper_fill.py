@@ -1,8 +1,9 @@
 """Integration: the API reports exactly what the paper pipeline just did.
 
 No mocks of the money path: the real risk gate, paper broker, gateway, ledger and
-pipeline execute the trade, and the API reads the same ledger plus the audit trail
-the pipeline produced. Only PostgreSQL is replaced by an in-memory repository.
+pipeline execute the trade, and the API rebuilds its book from the stored trades plus
+the audit trail the pipeline produced. Only PostgreSQL is replaced by an in-memory
+repository, which replays trades the same way the SQL one does.
 """
 
 from __future__ import annotations
@@ -66,6 +67,12 @@ class FakeRepository:
 
     def ping(self) -> bool:
         return True
+
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        """Replay the stored trades, exactly as the PostgreSQL implementation does."""
+        ledger.reset()
+        for stored in self._trades:
+            ledger.apply_trade(stored)
 
     def trades(self, limit: int) -> Sequence[Trade]:
         return self._trades[:limit]

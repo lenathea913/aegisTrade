@@ -7,9 +7,11 @@ Three rules shape this module:
    behind ``TradingPipeline``, driven by a runner, never by HTTP.
 2. **The dashboard is server-rendered.** Jinja2 + HTMX + Tailwind over a CDN: no Node
    build step, no client framework, no duplicated business logic in JavaScript.
-3. **Startup reconstructs the book.** The ledger is the source of truth while a process
-   runs, so it is reloaded from ``trading.trades`` at startup instead of reporting a
-   fresh ``initial_equity`` that ignores history.
+3. **The book is re-read, not remembered.** The runner is another process writing to
+   ``trading.trades``, so the API rebuilds positions, equity and loss windows from the
+   database on every read (cached for five seconds, the dashboard's poll interval).
+   A startup-only reconstruction made ``/positions`` a photograph of the moment the API
+   booted.
 """
 
 from __future__ import annotations
@@ -312,10 +314,15 @@ def create_app(
         )
 
     def _open_sides() -> dict[str, str]:
-        """Symbol -> the side currently held (``BUY`` long, ``SELL`` short)."""
+        """Symbol -> the side currently held (``BUY`` long, ``SELL`` short).
+
+        Read through ``book_positions``: the runner may have opened or closed a
+        position since this process started, and a stale side here would let the
+        dashboard offer a conversion that pyramids.
+        """
         return {
             position.symbol: ("BUY" if position.qty > 0 else "SELL")
-            for position in service.ledger.positions
+            for position in service.book_positions()
             if not position.is_flat
         }
 
@@ -336,6 +343,9 @@ def create_app(
         if session_factory is None or quotes is None:
             raise HTTPException(status_code=503, detail="trading is not configured")
         wanted = normalise_symbol(symbol)
+        # Closing is the one read that must not be served from a five-second-old book:
+        # the quantity and the side decide the exit order.
+        service.refresh_book(force=True)
         try:
             with session_scope(session_factory) as session:
                 result = close_via_gate(
@@ -567,6 +577,9 @@ def create_app(
     def _signals() -> SignalService:
         if signals is None:
             raise HTTPException(status_code=503, detail="signal service is not configured")
+        # Previews and conversions are sized against the book, so refresh it first:
+        # otherwise a signal is judged against equity and exposure the bot no longer has.
+        service.refresh_book()
         return signals
 
     @app.get("/api/signals", response_model=SignalListResponse, tags=["signals"])

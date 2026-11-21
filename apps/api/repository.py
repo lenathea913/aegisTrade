@@ -1,9 +1,10 @@
 """Read model for the API.
 
 The API is read-only in this phase: it never places an order. It reads executed
-trades and audit events from PostgreSQL and reports them; the in-process ledger
-supplies positions, equity and loss windows, because it is the source of truth
-while the service runs.
+trades and audit events from PostgreSQL and reports them, and it **rebuilds the book
+from those rows on every read**: the runner is a different process writing to the same
+tables, so an in-memory ledger reconstructed only at startup describes whatever the API
+saw when it booted, not what the bot currently holds.
 
 ``TradingRepository`` is a protocol so route and service tests need no database.
 """
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from aegis_core import Trade
 from aegis_db import AuditLog, TradeRecord, session_scope
-from aegis_ledger import AuditEvent, EventType, trade_from_row
+from aegis_ledger import AuditEvent, EventType, PortfolioLedger, trade_from_row
 
 __all__ = [
     "ApiRepository",
@@ -50,6 +51,9 @@ class ApiRepository(Protocol):
     def trades(self, limit: int) -> Sequence[Trade]:
         """Most recent executed trades, newest first."""
 
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        """Reload ``ledger`` from ``trading.trades`` and ``trading.positions``."""
+
     def audit_events(self, limit: int) -> Sequence[AuditEvent]:
         """Most recent audit events, newest first."""
 
@@ -74,6 +78,11 @@ class SqlTradingRepository:
                 select(TradeRecord).order_by(TradeRecord.filled_at.desc()).limit(limit)
             ).scalars()
             return [trade_from_row(row) for row in rows]
+
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        """Replay the durable record into ``ledger`` in one short session."""
+        with session_scope(self._factory) as session:
+            ledger.reconstruct_from_db(session, strict=strict)
 
     def audit_events(self, limit: int) -> Sequence[AuditEvent]:
         with session_scope(self._factory) as session:

@@ -9,6 +9,13 @@ The service answers four questions and never mutates anything:
 
 Every number comes from the ledger or the database; the API computes no PnL of its
 own and never writes.
+
+The ledger is **not** a startup snapshot. The runner is a separate process, so a book
+loaded once at boot goes stale the moment the bot trades: `/positions` would say "no
+open positions" while the journal shows a fresh fill. ``refresh_book`` re-derives
+positions, marks, realized PnL and therefore equity from ``trading.trades`` (with
+``trading.positions`` supplying the stops) before anything is reported, at most once per
+``BOOK_CACHE_SECONDS`` because the dashboard polls every five seconds.
 """
 
 from __future__ import annotations
@@ -18,9 +25,12 @@ from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from aegis_config import Settings
-from aegis_core import Trade, __version__, utc_now
+from aegis_core import Position, Trade, __version__, utc_now
 from aegis_ledger import AuditEvent, PortfolioLedger
+from aegis_observability import get_logger
 from api.formatting import price, qty
 from api.repository import ApiRepository
 from api.schemas import (
@@ -44,6 +54,10 @@ DEFAULT_JOURNAL_LIMIT = 50
 HEALTH_CACHE_SECONDS = 30.0
 # The badge is polled with the dashboard; a ping per request would hammer the venue.
 EXCHANGE_STATUS_CACHE_SECONDS = 10.0
+# The dashboard polls every 5 s; rebuilding the book on every poll of every partial
+# would replay the whole trade history several times a second. One rebuild per poll
+# window is enough to make the page reflect what the runner just did.
+BOOK_CACHE_SECONDS = 5.0
 
 
 class ApiService:
@@ -65,11 +79,45 @@ class ApiService:
         self._health_cache: tuple[float, HealthResponse] | None = None
         self._exchange_probe = exchange_probe
         self._exchange_cache: tuple[float, ExchangeStatusResponse] | None = None
+        #: ``None`` means "never refreshed from the database in this process yet".
+        self._book_refreshed_at: float | None = None
+        self._logger = get_logger("aegis.api.service")
 
     @property
     def ledger(self) -> PortfolioLedger:
-        """The book this service reports (restored from the database at startup)."""
+        """The book this service reports; ``refresh_book`` keeps it current."""
         return self._ledger
+
+    # ------------------------------------------------------------ live book
+
+    def refresh_book(self, *, force: bool = False) -> PortfolioLedger:
+        """Re-derive positions and equity from the database, at most once per window.
+
+        The runner writes trades and positions in its own process, so the only honest
+        source for what is held *now* is the database. A reconstruction failure is not
+        turned into an empty book — that would show a flat account that is not real —
+        and it is not raised either: the last good book stays on screen and ``/health``
+        already reports the database as unavailable. ``force`` skips the cache, which
+        is what a caller about to close a position needs.
+        """
+        monotonic_now = time.monotonic()
+        if (
+            not force
+            and self._book_refreshed_at is not None
+            and monotonic_now - self._book_refreshed_at < BOOK_CACHE_SECONDS
+        ):
+            return self._ledger
+        try:
+            self._repository.reconstruct(self._ledger, strict=False)
+        except SQLAlchemyError as exc:
+            self._logger.warning("book_refresh_failed", error=str(exc))
+            return self._ledger
+        self._book_refreshed_at = monotonic_now
+        return self._ledger
+
+    def book_positions(self) -> tuple[Position, ...]:
+        """Positions as the database currently has them (flat rows included)."""
+        return self.refresh_book().positions
 
     # --------------------------------------------------------------- health
 
@@ -137,7 +185,7 @@ class ApiService:
     # ------------------------------------------------------------ positions
 
     def positions(self) -> PositionsResponse:
-        state = self._ledger.snapshot(now=self._clock())
+        state = self.refresh_book().snapshot(now=self._clock())
         positions = [
             PositionResponse(
                 symbol=position.symbol,
@@ -166,7 +214,7 @@ class ApiService:
     # ---------------------------------------------------------- risk budget
 
     def risk_budget(self) -> RiskBudgetResponse:
-        state = self._ledger.snapshot(now=self._clock())
+        state = self.refresh_book().snapshot(now=self._clock())
         limits = self._settings.risk.limits
         equity = state.equity
 

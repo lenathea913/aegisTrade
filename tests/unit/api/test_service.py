@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from aegis_config import Settings, load_settings
 from aegis_core import Side, Trade
@@ -40,6 +41,31 @@ class FakeRepository:
     def audit_events(self, limit: int) -> Sequence[AuditEvent]:
         self.limits.append(limit)
         return self._events[:limit]
+
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        """Offline fakes hold no durable record, so there is nothing to replay."""
+
+
+class BookRepository(FakeRepository):
+    """A stand-in for the database the runner also writes to.
+
+    ``reconstruct`` mirrors what PostgreSQL does: drop the in-memory book and replay the
+    stored trades. Mutating ``stored_trades`` between reads is how a test plays the part
+    of the runner filling an order.
+    """
+
+    def __init__(self, *, database_ok: bool = True) -> None:
+        super().__init__(database_ok=database_ok)
+        self.stored_trades: list[Trade] = []
+        self.reconstructions = 0
+        self.strict_flags: list[bool] = []
+
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        self.reconstructions += 1
+        self.strict_flags.append(strict)
+        ledger.reset()
+        for stored in self.stored_trades:
+            ledger.apply_trade(stored)
 
 
 def trade(
@@ -140,6 +166,58 @@ def test_positions_are_empty_on_a_fresh_ledger() -> None:
     assert isinstance(positions, PositionsResponse)
     assert positions.count == 0
     assert positions.positions == []
+
+
+def test_positions_are_rebuilt_from_the_database_not_a_startup_snapshot() -> None:
+    """A fill the runner writes in another process must show up without a restart."""
+    repository = BookRepository()
+    service = make_service(repository=repository)
+    assert service.positions().count == 0
+
+    # The runner trades; this process is neither restarted nor told about it.
+    repository.stored_trades.append(trade(qty="0.5", price="30000"))
+
+    positions = service.refresh_book(force=True).snapshot(now=NOW).open_positions
+
+    assert [position.symbol for position in positions] == ["BTC/USDT"]
+    assert Decimal(positions[0].qty) == Decimal("0.5")
+
+
+def test_the_book_is_replayed_once_per_poll_window() -> None:
+    repository = BookRepository()
+    service = make_service(repository=repository)
+
+    service.positions()
+    service.risk_budget()
+
+    assert repository.reconstructions == 1
+    assert repository.strict_flags == [False]
+
+
+def test_equity_is_recomputed_from_the_trades_in_the_database() -> None:
+    repository = BookRepository()
+    repository.stored_trades.extend([trade(fee="2"), trade(fee="3")])
+
+    budget = make_service(repository=repository).risk_budget()
+
+    # 10 000 to start, two fills costing 2 and 3; the position is marked at its own fill,
+    # so the fees are the only realized change.
+    assert Decimal(budget.equity) == Decimal("9995")
+    assert budget.open_positions == 1
+    assert Decimal(budget.total_exposure) == Decimal("30000")
+
+
+def test_a_failed_refresh_keeps_the_last_good_book_instead_of_blanking_it() -> None:
+    class BrokenBook(BookRepository):
+        def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+            raise SQLAlchemyError("database is down")
+
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    ledger.apply_trade(trade())
+
+    positions = make_service(repository=BrokenBook(), ledger=ledger).positions()
+
+    assert positions.count == 1
 
 
 def test_positions_are_marked_and_serialised_as_strings() -> None:

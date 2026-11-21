@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from aegis_config import load_settings
 from aegis_core import Trade
-from aegis_ledger import AuditEvent
+from aegis_ledger import AuditEvent, PortfolioLedger
 from api import app as app_module
 from api.service import DEFAULT_JOURNAL_LIMIT
 
@@ -27,6 +27,9 @@ class FakeEngine:
 class EmptyRepository:
     def ping(self) -> bool:
         return True
+
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        """Offline fake: nothing is stored, so the book keeps what the test set."""
 
     def trades(self, limit: int) -> Sequence[Trade]:
         return []

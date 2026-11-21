@@ -37,6 +37,9 @@ class EmptyRepository:
     def ping(self) -> bool:
         return True
 
+    def reconstruct(self, ledger: PortfolioLedger, *, strict: bool = True) -> None:
+        """Offline fake: nothing is stored, so the book keeps what the test set."""
+
     def trades(self, limit: int) -> Sequence[Trade]:
         return []
 

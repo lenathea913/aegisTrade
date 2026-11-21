@@ -327,6 +327,19 @@ class PortfolioLedger:
 
     # ------------------------------------------------------------ snapshots
 
+    def reset(self) -> None:
+        """Forget every in-memory row so a durable record can be replayed into it.
+
+        Used by ``reconstruct_from_db`` and by any long-lived process that wants to
+        re-derive positions and equity from the database instead of trusting the state
+        it happens to be holding.
+        """
+        self._positions.clear()
+        self._marks.clear()
+        self._realized.clear()
+        self._protections.clear()
+        self._last_funding.clear()
+
     def snapshot(self, *, now: datetime | None = None) -> PortfolioState:
         """Frozen view handed to the risk engine (never a live query)."""
         moment = now if now is not None else self._clock()
@@ -376,11 +389,7 @@ class PortfolioLedger:
             position_from_row(row) for row in session.execute(select(PositionRecord)).scalars()
         ]
 
-        self._positions.clear()
-        self._marks.clear()
-        self._realized.clear()
-        self._protections.clear()
-        self._last_funding.clear()
+        self.reset()
 
         for trade in replayed:
             current = self.position(trade.symbol)

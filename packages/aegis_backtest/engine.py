@@ -25,10 +25,11 @@ opposite one closes the position (and only opens the reverse leg when
 from __future__ import annotations
 
 import statistics
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from itertools import pairwise
+from itertools import islice, pairwise
+from typing import overload
 
 from aegis_backtest.config import BacktestConfig
 from aegis_backtest.models import (
@@ -71,6 +72,47 @@ def _with_slippage(price: Decimal, direction: int, slippage_bps: Decimal) -> Dec
 
 def _fee(price: Decimal, qty: Decimal, fee_bps: Decimal) -> Decimal:
     return price * qty * fee_bps / _BPS
+
+
+class _History(Sequence[Candle]):
+    """A read-only window over ``candles[:length]`` that never copies the series.
+
+    ``candles[: index + 1]`` looks harmless and is not: it copies the whole series on
+    every bar, which makes a replay quadratic (27 000 hourly bars: minutes instead of
+    seconds). This view gives the strategy exactly the same window — ``len``,
+    indexing, negative indexing, slicing and iteration all behave like the list slice —
+    while touching only the bars the strategy actually asks for.
+
+    Slicing still produces a list, because a strategy that slices is asking for a
+    concrete copy; the cost is then proportional to the slice, not to the whole series.
+    """
+
+    __slots__ = ("_candles", "_length")
+
+    def __init__(self, candles: Sequence[Candle], length: int) -> None:
+        self._candles = candles
+        self._length = length
+
+    def __len__(self) -> int:
+        return self._length
+
+    @overload
+    def __getitem__(self, index: int) -> Candle: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[Candle]: ...
+
+    def __getitem__(self, index: int | slice) -> Candle | list[Candle]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self._length)
+            return list(self._candles[start:stop:step])
+        position = index + self._length if index < 0 else index
+        if position < 0 or position >= self._length:
+            raise IndexError("history index out of range")
+        return self._candles[position]
+
+    def __iter__(self) -> Iterator[Candle]:
+        return islice(iter(self._candles), self._length)
 
 
 def _periods_per_year(candles: Sequence[Candle]) -> float:
@@ -431,7 +473,7 @@ def run(
         sim.check_exits(candle)
 
         if pending is None:
-            intent = strategy.on_candle(candle, candles[: index + 1])
+            intent = strategy.on_candle(candle, _History(candles, index + 1))
             if intent is not None:
                 refusal = _gate_refusal(gate, intent, sim, candle)
                 if refusal is None:

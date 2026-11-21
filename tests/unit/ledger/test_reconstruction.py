@@ -123,6 +123,26 @@ def test_open_position_is_rebuilt_and_marked_at_last_fill() -> None:
     assert summary.equity == Decimal("9998.5")  # fee already paid
 
 
+def test_database_rounding_noise_is_not_drift() -> None:
+    """NUMERIC(28,12) rounds the stored realized PnL; that is the same book.
+
+    Regression for the runner crash loop: the replay produced
+    85.648872092975800000000000 while the row held 85.648872092976 and an exact
+    ``==`` called a rounding artefact "ledger drift".
+    """
+    trades = [
+        trade_row(trade_id="t1", side="BUY", qty="0.1", price="30000"),
+        trade_row(trade_id="t2", side="SELL", qty="0.1", price="30856.488720929758"),
+    ]
+    stored = [position_row(qty="0", avg_entry="0", realized="85.648872092976")]
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+
+    summary = ledger.reconstruct_from_db(FakeSession(trades, stored), now=NOW)
+
+    assert summary.trades_replayed == 2
+    assert ledger.position("BTC/USDT").is_flat
+
+
 def test_disagreement_with_positions_is_refused_by_default() -> None:
     trades = [trade_row(trade_id="t1", side="BUY", qty="0.1", price="30000")]
     session = FakeSession(trades, [position_row(qty="9", avg_entry="30000")])

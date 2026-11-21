@@ -38,6 +38,19 @@ __all__ = [
 
 _ZERO = Decimal("0")
 
+# ``trading.positions`` stores NUMERIC(28, 12), so it keeps twelve decimals; the
+# replay in Python keeps every digit its arithmetic produces. The two are
+# mathematically the same book but can differ in the last stored place
+# (85.648872092976 vs 85.6488720929758...), which must not be reported as drift.
+# One unit in the twelfth decimal is the widest honest gap; anything larger is a
+# real disagreement between the trade log and the positions table.
+POSITION_TOLERANCE = Decimal("0.000000001")
+
+
+def _same_amount(stored: Decimal, replayed: Decimal) -> bool:
+    """Compare two decimals at the precision the database actually stores."""
+    return abs(stored - replayed) < POSITION_TOLERANCE
+
 
 class ReconstructionSession(Protocol):
     """The slice of ``Session`` reconstruction needs.
@@ -476,9 +489,9 @@ class PortfolioLedger:
                 if not row.is_flat:
                     differences.append(f"{symbol}: row holds {row.qty} with no trades")
                 continue
-            if row.qty != replayed.qty:
+            if not _same_amount(row.qty, replayed.qty):
                 differences.append(f"{symbol}: qty row={row.qty} replay={replayed.qty}")
-            if row.realized_pnl != replayed.realized_pnl:
+            if not _same_amount(row.realized_pnl, replayed.realized_pnl):
                 differences.append(
                     f"{symbol}: realized row={row.realized_pnl} replay={replayed.realized_pnl}"
                 )

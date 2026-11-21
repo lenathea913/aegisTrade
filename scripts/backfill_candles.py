@@ -110,8 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--venue",
         choices=["spot", "futures"],
-        default=None,
-        help="market these bars belong to (default: futures for /fapi paths, else spot)",
+        default="futures",
+        help=(
+            "market these bars belong to, written to market.candles.venue "
+            "(default: futures, matching the default /fapi endpoint)"
+        ),
     )
     parser.add_argument("--exchange", default="binance")
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -120,10 +123,16 @@ def main(argv: list[str] | None = None) -> int:
     timeframe = Timeframe(args.timeframe)
     settings = load_settings()
     environment = args.environment or settings.exchange.environment
-    # The endpoint decides the market unless the operator says otherwise: a /fapi path
-    # is a perpetual contract, /api/v3 is spot. Labelling both "spot" is exactly how
-    # the two series got mixed before ``venue`` existed.
-    venue = args.venue or ("futures" if "fapi" in args.path else "spot")
+    # The label and the endpoint must agree. A /fapi path is a perpetual contract,
+    # /api/v3 is spot, and writing one under the other's label is exactly how the two
+    # series got mixed before ``venue`` existed — so refuse instead of guessing.
+    endpoint_market = "futures" if "fapi" in args.path else "spot"
+    if args.venue != endpoint_market:
+        parser.error(
+            f"--venue {args.venue} contradicts --path {args.path!r} "
+            f"({endpoint_market} klines); pass --venue {endpoint_market} or a matching --path"
+        )
+    venue = args.venue
 
     engine = create_engine_from_settings(settings.database)
     factory = create_session_factory(engine)

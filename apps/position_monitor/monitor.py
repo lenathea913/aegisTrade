@@ -305,18 +305,23 @@ class PositionMonitor:
         return True
 
     def _quote(self, symbol: str) -> MarketQuote | None:
-        """Latest price: the ledger's live mark when configured, else the last candle.
+        """Latest price: real-time marks first, then the last candle, then the book mark.
 
         ``position_monitor.use_live_price`` is the switch for acting on a real-time
         price instead of waiting for the next closed candle. ``live_quotes`` (Redis
-        marks from ``apps/market_streamer``) wins, then a mark pushed into the ledger,
-        and the last closed candle is the honest fallback when neither exists.
+        marks from ``apps/market_streamer``) wins and already falls back to the newest
+        candle; the last closed candle is the next honest source. A mark pushed into
+        the ledger comes last: the ledger also marks a position at its *entry* price,
+        so it must never outrank a real quote when judging a stop.
         """
         if self._use_live_price:
             if self._live_quotes is not None:
                 live = self._live_quotes.latest(symbol)
                 if live is not None:
                     return live
+            candle = self._quotes.latest(symbol)
+            if candle is not None:
+                return candle
             mark = self._ledger.mark(symbol)
             if mark is not None:
                 return MarketQuote(symbol=symbol, price=mark, as_of=self._clock())

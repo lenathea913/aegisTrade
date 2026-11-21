@@ -37,7 +37,9 @@ def test_runner_and_monitor_defaults() -> None:
     assert settings.runner.signal_interval_seconds == 300
     assert settings.runner.monitor_interval_seconds == 60
     assert settings.runner.monitor_enabled is True
-    assert settings.position_monitor.use_live_price is False
+    # On by default: the testnet 15m feed lags, and a closed-candle-only monitor is
+    # blind to a stop crossed inside the bar.
+    assert settings.position_monitor.use_live_price is True
 
 
 def test_runner_cadence_and_live_price_are_overridable(monkeypatch: pytest.MonkeyPatch) -> None:

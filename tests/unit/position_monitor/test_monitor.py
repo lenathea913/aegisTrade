@@ -159,8 +159,8 @@ def test_missing_quote_is_reported_and_skipped() -> None:
     assert ledger.position("BTC/USDT").qty == Decimal("0.1")
 
 
-def test_kill_switch_still_blocks_the_protective_exit() -> None:
-    """The monitor does not get a private door around the gate."""
+def test_kill_switch_still_allows_the_protective_exit() -> None:
+    """The exit still goes through the gate; the gate now lets a reduction through."""
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     _open_long(_pipeline(ledger), ledger)
     pipeline = _pipeline(ledger, kill_switch=True)
@@ -169,9 +169,10 @@ def test_kill_switch_still_blocks_the_protective_exit() -> None:
     actions = monitor.check()
 
     assert len(actions) == 1
-    assert actions[0].result.decision.approved is False
-    assert "kill_switch_active" in actions[0].result.reasons
-    assert ledger.position("BTC/USDT").qty == Decimal("0.1")
+    assert actions[0].result.decision.approved is True
+    assert "kill_switch_allows_exit" in actions[0].result.reasons
+    assert actions[0].closed is True
+    assert ledger.position("BTC/USDT").qty == Decimal("0")
 
 
 def test_stale_quote_blocks_the_exit_and_keeps_the_position() -> None:
@@ -203,13 +204,13 @@ def test_exit_intent_carries_the_full_position(price: str) -> None:
     assert action.intent.stop_loss > action.intent.price  # type: ignore[operator]
 
 
-def test_live_price_uses_the_ledger_mark_when_enabled() -> None:
-    """``position_monitor.use_live_price`` acts on a pushed mark, not the last candle."""
+def test_live_price_uses_the_ledger_mark_as_a_last_resort() -> None:
+    """With no streamer mark and no stored candle, a pushed mark is still actionable."""
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
     pipeline = _pipeline(ledger)
     _open_long(pipeline, ledger)
     ledger.mark_price("BTC/USDT", Decimal("28999"))
-    monitor = _monitor(pipeline, ledger, Quotes({"BTC/USDT": "30500"}), use_live_price=True)
+    monitor = _monitor(pipeline, ledger, Quotes({}), use_live_price=True)
 
     actions = monitor.check()
 

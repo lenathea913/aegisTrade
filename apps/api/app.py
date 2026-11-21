@@ -67,8 +67,9 @@ from api.security import ApiTokenGuard, install_api_token_middleware
 from api.service import ApiService
 from api.trading import CloseRequestError
 from api.trading import close_position as close_via_gate
+from market_streamer.marks import RedisMarkStore
 from order_reconciler.state import SqlReconciliationState
-from position_monitor.quotes import CandleQuoteSource
+from position_monitor.quotes import CandleQuoteSource, MarkStoreQuoteSource, QuoteSource
 from signal_service import (
     ScanReport,
     SignalNotFoundError,
@@ -113,6 +114,27 @@ def _probe_exchange(settings: Settings) -> tuple[bool, str]:
         # The badge is polled repeatedly: a client per probe would leak sockets.
         if callable(close):
             close()
+
+
+def _live_marks(settings: Settings, fallback: QuoteSource) -> QuoteSource:
+    """Streamer marks when Redis is configured, the closed candle otherwise.
+
+    The API needs the same price the venue is showing to mark open positions; a book
+    replayed from trades only knows entry prices. ``MarkStoreQuoteSource`` already
+    refuses a mark older than the streamer TTL and falls back to the newest candle, so
+    a stopped streamer degrades instead of freezing the dashboard on a stale tick.
+    """
+    try:
+        store = RedisMarkStore.from_url(
+            settings.redis.url, ttl_seconds=settings.streaming.mark_ttl_seconds
+        )
+    except Exception:
+        return fallback
+    return MarkStoreQuoteSource(
+        store,
+        max_age_seconds=settings.streaming.mark_ttl_seconds,
+        fallback=fallback,
+    )
 
 
 WEB_DIR = Path(__file__).parent
@@ -191,11 +213,14 @@ def create_app(
     if service is None:
         engine = create_engine_from_settings(settings.database)
         session_factory = create_session_factory(engine)
+        candle_quotes = CandleQuoteSource.from_settings(settings, session_factory)
         service = ApiService(
             settings=settings,
             repository=SqlTradingRepository(session_factory),
             ledger=PortfolioLedger(initial_equity=settings.risk.initial_equity),
             exchange_probe=lambda: _probe_exchange(settings),
+            # Marks open positions at the live price, so unrealized PnL is real.
+            marks=_live_marks(settings, candle_quotes),
         )
 
     if signals is None and session_factory is not None:

@@ -153,8 +153,29 @@ def test_reducing_order_still_needs_fresh_market_data() -> None:
     assert any(reason.startswith("stale_market_data") for reason in decision.reasons)
 
 
-def test_reducing_order_still_respects_the_kill_switch() -> None:
+def test_reducing_order_is_allowed_under_the_kill_switch() -> None:
+    """A halted bot must still be able to flatten what it holds."""
     decision = evaluate(_exit(), _state(), _limits(), _market(), kill_switch=True)
+
+    assert decision.approved is True
+    assert RiskCheck.KILL_SWITCH_ALLOWS_EXIT in decision.reasons
+    assert RiskCheck.RISK_REDUCING_ORDER in decision.reasons
+
+
+def test_a_new_entry_under_the_kill_switch_is_still_refused() -> None:
+    add = OrderIntent(
+        symbol="BTC/USDT",
+        side=Side.BUY,
+        order_type=OrderType.MARKET,
+        qty=Decimal("0.1"),
+        price=Decimal("29000"),
+        stop_loss=Decimal("28000"),
+        strategy_id="simple_ema_cross",
+        reason="crossed above",
+        created_at=NOW,
+    )
+
+    decision = evaluate(add, _state(), _limits(), _market(), kill_switch=True)
 
     assert decision.approved is False
     assert "kill_switch_active" in decision.reasons

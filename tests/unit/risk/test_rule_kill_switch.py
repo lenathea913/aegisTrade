@@ -1,4 +1,4 @@
-"""Rule 7: the kill switch halts every approval, whatever else looks fine."""
+"""Rule 7: the kill switch halts new exposure but never an exit."""
 
 from __future__ import annotations
 
@@ -17,15 +17,14 @@ def test_baseline_is_approved(
     decision = evaluate(small_intent, portfolio, limits, market)
 
     assert decision.approved is True
-    # A new entry is not a risk-reducing order, so that check does not apply.
-    expected = tuple(
-        check.value for check in RiskCheck if check is not RiskCheck.RISK_REDUCING_ORDER
-    )
+    # A new entry is not a risk-reducing order, so neither risk-reducing check applies.
+    not_applicable = {RiskCheck.RISK_REDUCING_ORDER, RiskCheck.KILL_SWITCH_ALLOWS_EXIT}
+    expected = tuple(check.value for check in RiskCheck if check not in not_applicable)
     assert decision.reasons == expected
     assert decision.max_risk_amount == Decimal("100")
 
 
-def test_kill_switch_rejects_everything(
+def test_kill_switch_rejects_a_new_entry(
     small_intent: OrderIntent,
     portfolio: PortfolioState,
     limits: RiskLimit,

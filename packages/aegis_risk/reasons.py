@@ -45,6 +45,8 @@ class RiskCheck(StrEnum):
     """Checks that ran and passed; recorded on an approval for later audit."""
 
     KILL_SWITCH_INACTIVE = "kill_switch_inactive"
+    #: The kill switch is on, but the intent only reduces an open position.
+    KILL_SWITCH_ALLOWS_EXIT = "kill_switch_allows_exit"
     SYMBOL_ALLOWED = "symbol_allowed"
     MARKET_DATA_FRESH = "market_data_fresh"
     OPEN_POSITIONS_WITHIN_LIMIT = "open_positions_within_limit"

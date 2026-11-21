@@ -134,8 +134,8 @@ def test_a_flat_book_has_nothing_to_close() -> None:
         )
 
 
-def test_the_kill_switch_still_refuses_an_operator_close() -> None:
-    """ADR 0009: a reducing order skips the caps, never the kill switch."""
+def test_the_kill_switch_does_not_trap_the_operator_in_a_position() -> None:
+    """A halted bot must still let the operator flatten what it holds."""
     base = load_settings("paper")
     settings = base.model_copy(update={"risk": base.risk.model_copy(update={"kill_switch": True})})
     ledger = PortfolioLedger(initial_equity=Decimal("10000"))
@@ -151,8 +151,8 @@ def test_the_kill_switch_still_refuses_an_operator_close() -> None:
         clock=lambda: NOW,
     )
 
-    assert result.decision.approved is False
-    assert any(reason.startswith("kill_switch_active") for reason in result.reasons)
-    assert ledger.position(SYMBOL).is_flat is False
-    # The operator's request is recorded even though nothing filled.
+    assert result.decision.approved is True
+    assert "kill_switch_allows_exit" in result.reasons
+    assert result.filled is True
+    assert ledger.position(SYMBOL).is_flat is True
     assert writer.events[0].event_type is EventType.MANUAL_CLOSE

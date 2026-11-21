@@ -10,8 +10,15 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from aegis_config import Settings, load_settings
-from aegis_core import Side, Trade
-from aegis_ledger import AuditEvent, EventType, LedgerError, PortfolioLedger, RealizedEvent
+from aegis_core import MarketQuote, Side, Trade
+from aegis_ledger import (
+    AuditEvent,
+    EventType,
+    LedgerError,
+    PortfolioLedger,
+    PositionProtection,
+    RealizedEvent,
+)
 from api.schemas import JournalResponse, PositionsResponse, RiskBudgetResponse
 from api.service import ApiService
 
@@ -92,17 +99,37 @@ def event(kind: EventType, at: datetime = NOW) -> AuditEvent:
     return AuditEvent(event_type=kind, entity_type="order", entity_id="ord-1", created_at=at)
 
 
+class Marks:
+    """A live-mark source: symbol -> price, optionally raising."""
+
+    def __init__(self, prices: dict[str, str], *, error: Exception | None = None) -> None:
+        self._prices = {symbol: Decimal(price) for symbol, price in prices.items()}
+        self._error = error
+        self.reads: list[str] = []
+
+    def latest(self, symbol: str) -> MarketQuote | None:
+        self.reads.append(symbol)
+        if self._error is not None:
+            raise self._error
+        price = self._prices.get(symbol)
+        if price is None:
+            return None
+        return MarketQuote(symbol=symbol, price=price, as_of=NOW)
+
+
 def make_service(
     *,
     repository: FakeRepository | None = None,
     ledger: PortfolioLedger | None = None,
     settings: Settings | None = None,
+    marks: Marks | None = None,
 ) -> ApiService:
     return ApiService(
         settings=settings or load_settings("paper"),
         repository=repository or FakeRepository(),
         ledger=ledger or PortfolioLedger(initial_equity=Decimal("10000")),
         clock=lambda: NOW,
+        marks=marks,
     )
 
 
@@ -192,6 +219,83 @@ def test_the_book_is_replayed_once_per_poll_window() -> None:
 
     assert repository.reconstructions == 1
     assert repository.strict_flags == [False]
+
+
+def test_live_marks_drive_unrealized_pnl_and_equity() -> None:
+    """A replayed book only knows entry prices; the live mark is what makes PnL real."""
+    repository = BookRepository()
+    repository.stored_trades.append(trade(qty="0.5", price="30000"))
+    marks = Marks({"BTC/USDT": "31000"})
+
+    positions = make_service(repository=repository, marks=marks).positions()
+    budget = make_service(repository=repository, marks=marks).risk_budget()
+
+    position = positions.positions[0]
+    assert Decimal(position.unrealized_pnl) == Decimal("500")
+    assert Decimal(position.roe_pct) == Decimal("500") / Decimal("15000") * 100
+    assert Decimal(budget.equity) == Decimal("10500")
+    assert Decimal(budget.total_exposure) == Decimal("15500")
+    assert marks.reads.count("BTC/USDT") == 2
+
+
+def test_a_missing_live_mark_keeps_the_replayed_mark() -> None:
+    repository = BookRepository()
+    repository.stored_trades.append(trade(qty="0.5", price="30000"))
+
+    positions = make_service(repository=repository, marks=Marks({})).positions()
+
+    assert Decimal(positions.positions[0].unrealized_pnl) == Decimal("0")
+    assert Decimal(positions.positions[0].avg_entry) == Decimal("30000")
+
+
+def test_a_failing_mark_source_does_not_break_the_page() -> None:
+    repository = BookRepository()
+    repository.stored_trades.append(trade(qty="0.5", price="30000"))
+
+    positions = make_service(
+        repository=repository, marks=Marks({}, error=ConnectionError("redis is down"))
+    ).positions()
+
+    assert positions.count == 1
+    assert Decimal(positions.positions[0].unrealized_pnl) == Decimal("0")
+
+
+def test_protection_status_separates_venue_book_and_naked() -> None:
+    """A paper fill has no venue id but does have a stop: it is not naked."""
+    ledger = PortfolioLedger(initial_equity=Decimal("10000"))
+    ledger.apply_trade(trade())
+    ledger.set_protection(
+        PositionProtection(
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            qty=Decimal("0.5"),
+            stop_loss=Decimal("29000"),
+            take_profit=Decimal("32000"),
+        )
+    )
+
+    book = make_service(ledger=ledger).positions().positions[0]
+    assert book.protection == "BOOK_PROTECTED"
+    assert book.protected is True
+    assert book.stop_loss == "29000"
+
+    ledger.set_protection(
+        PositionProtection(
+            symbol="BTC/USDT",
+            side=Side.BUY,
+            qty=Decimal("0.5"),
+            stop_loss=Decimal("29000"),
+            stop_order_id="venue-stop-1",
+        )
+    )
+    venue = make_service(ledger=ledger).positions().positions[0]
+    assert venue.protection == "VENUE_PROTECTED"
+    assert venue.stop_order_id == "venue-stop-1"
+
+    ledger.clear_protection("BTC/USDT")
+    naked = make_service(ledger=ledger).positions().positions[0]
+    assert naked.protection == "NAKED"
+    assert naked.protected is False
 
 
 def test_equity_is_recomputed_from_the_trades_in_the_database() -> None:

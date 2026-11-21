@@ -56,7 +56,12 @@ class MarkStoreQuoteSource:
         self._clock = clock
 
     def latest(self, symbol: str) -> MarketQuote | None:
-        mark = self._store.latest(symbol)
+        try:
+            mark = self._store.latest(symbol)
+        except Exception:
+            # Redis being down is not "no price": fall through to the candle fallback
+            # rather than making a stop-loss decision blind.
+            mark = None
         if mark is not None and fresh(mark, max_age_seconds=self._max_age, now=self._clock()):
             return MarketQuote(symbol=mark.symbol, price=mark.price, as_of=mark.observed_at)
         if self._fallback is not None:

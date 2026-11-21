@@ -11,8 +11,10 @@ become) an ``ApprovedOrder``. Design choices worth knowing:
   touching the daily loss limit is already the signal to stop.
 * **No price, no approval.** A MARKET intent with no reference price and no fresh
   quote cannot be measured, so it is rejected rather than guessed.
-* **The kill switch is an argument, not a config read**, and ``RiskGate`` binds it
-  once so a caller cannot forget it.
+* **The kill switch halts entries, not the way out.** It is an argument, not a config
+  read, and ``RiskGate`` binds it once so a caller cannot forget it. A halt that also
+  refused exits trapped every open position: the operator could stop the bot but not
+  flatten it, and the only remaining exit was liquidation.
 * **A new idea needs a free slot.** ``max_open_positions`` is counted from the
   book, not from configuration intent, so a scan across ten symbols cannot turn
   into ten concurrent bets; a position-reducing order never needs a slot.
@@ -100,7 +102,8 @@ def evaluate(
         portfolio_state: equity, realized PnL for the day/week and open positions.
         risk_limits: hard limits; percentages are percent units.
         market_context: quotes plus the decision timestamp.
-        kill_switch: operator halt; when true nothing is ever approved.
+        kill_switch: operator halt; when true no *new* exposure is approved, while an
+            intent that only reduces an open position still passes (rule 7).
         stale_after_seconds: maximum quote age considered usable.
 
     Returns:
@@ -115,11 +118,14 @@ def evaluate(
 
     equity = portfolio_state.equity
 
-    # Rule 7: kill switch.
-    if kill_switch:
-        failures.append(RejectReason.KILL_SWITCH_ACTIVE.value)
-    else:
+    # Rule 7: kill switch. It stops new risk and never blocks an exit: a halted bot
+    # whose positions cannot be closed is more dangerous than a running one.
+    if not kill_switch:
         checks.append(RiskCheck.KILL_SWITCH_INACTIVE.value)
+    elif reducing:
+        checks.append(RiskCheck.KILL_SWITCH_ALLOWS_EXIT.value)
+    else:
+        failures.append(RejectReason.KILL_SWITCH_ACTIVE.value)
 
     # Rule 1: symbol allow-list (empty list denies everything).
     if risk_limits.allows(intent.symbol):

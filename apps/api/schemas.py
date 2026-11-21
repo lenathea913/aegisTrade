@@ -100,7 +100,13 @@ class PositionResponse(BaseModel):
     roe_pct: str = ""
     #: Venue order id of the stop, when one was recorded.
     stop_order_id: str | None = None
-    #: True when the position carries a venue-side stop order id (green lock).
+    stop_loss: str | None = None
+    take_profit: str | None = None
+    #: Which layer holds the stop: ``VENUE_PROTECTED`` (an exchange order),
+    #: ``BOOK_PROTECTED`` (a level the book carries and the monitor enforces, e.g. paper
+    #: mode) or ``NAKED`` (no stop at all).
+    protection: Literal["VENUE_PROTECTED", "BOOK_PROTECTED", "NAKED"] = "NAKED"
+    #: True for any recorded stop, venue-side or book-side; see ``protection``.
     protected: bool = False
 
 

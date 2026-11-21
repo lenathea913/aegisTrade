@@ -24,11 +24,12 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal, Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from aegis_config import Settings
-from aegis_core import Position, Trade, __version__, utc_now
+from aegis_core import MarketQuote, Position, Trade, __version__, utc_now
 from aegis_ledger import AuditEvent, PortfolioLedger
 from aegis_observability import get_logger
 from api.formatting import price, qty
@@ -59,6 +60,29 @@ EXCHANGE_STATUS_CACHE_SECONDS = 10.0
 # window is enough to make the page reflect what the runner just did.
 BOOK_CACHE_SECONDS = 5.0
 
+ProtectionStatus = Literal["VENUE_PROTECTED", "BOOK_PROTECTED", "NAKED"]
+
+
+class QuoteLookup(Protocol):
+    """Anything that answers "what is the latest price for this symbol?"."""
+
+    def latest(self, symbol: str) -> MarketQuote | None: ...
+
+
+def _protection_status(position: Position) -> ProtectionStatus:
+    """Which layer actually holds this position's stop.
+
+    A paper fill never has a venue order id, so ``protected = stop_order_id is not None``
+    reported every paper position as naked even though the book carried a stop the
+    monitor was enforcing. The three states an operator needs are distinct: the venue
+    itself guards the position, only the book does, or nothing does.
+    """
+    if position.stop_order_id is not None:
+        return "VENUE_PROTECTED"
+    if position.stop_loss is not None:
+        return "BOOK_PROTECTED"
+    return "NAKED"
+
 
 class ApiService:
     """Composes the ledger, the repository and the configuration."""
@@ -71,11 +95,15 @@ class ApiService:
         ledger: PortfolioLedger,
         clock: Callable[[], datetime] = utc_now,
         exchange_probe: Callable[[], tuple[bool, str]] | None = None,
+        marks: QuoteLookup | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._ledger = ledger
         self._clock = clock
+        #: Live marks (Redis from the streamer, closed-candle fallback). Without it the
+        #: book is only ever marked at its entry price, which makes unrealized PnL zero.
+        self._marks = marks
         self._health_cache: tuple[float, HealthResponse] | None = None
         self._exchange_probe = exchange_probe
         self._exchange_cache: tuple[float, ExchangeStatusResponse] | None = None
@@ -112,8 +140,32 @@ class ApiService:
         except SQLAlchemyError as exc:
             self._logger.warning("book_refresh_failed", error=str(exc))
             return self._ledger
+        self._apply_live_marks()
         self._book_refreshed_at = monotonic_now
         return self._ledger
+
+    def _apply_live_marks(self) -> None:
+        """Mark every open position at the latest price the venue reported.
+
+        A replay can only mark at the last traded price: trades are the immutable
+        record and carry no quote, so unrealized PnL would be structurally zero however
+        fresh the data. The mark source enforces its own freshness and falls back to the
+        last closed candle, and a source that raises must not stop the book from
+        rendering — the entry-price mark is still better than no page at all.
+        """
+        if self._marks is None:
+            return
+        for position in self._ledger.positions:
+            if position.is_flat:
+                continue
+            try:
+                quote = self._marks.latest(position.symbol)
+            except Exception as exc:
+                self._logger.warning("live_mark_failed", symbol=position.symbol, error=str(exc))
+                continue
+            if quote is None or quote.price <= 0:
+                continue
+            self._ledger.mark_price(position.symbol, quote.price)
 
     def book_positions(self) -> tuple[Position, ...]:
         """Positions as the database currently has them (flat rows included)."""
@@ -186,29 +238,40 @@ class ApiService:
 
     def positions(self) -> PositionsResponse:
         state = self.refresh_book().snapshot(now=self._clock())
-        positions = [
-            PositionResponse(
-                symbol=position.symbol,
-                side=None if position.side is None else position.side.value,
-                qty=str(position.qty),
-                avg_entry=str(position.avg_entry),
-                notional=str(position.notional),
-                unrealized_pnl=str(position.unrealized_pnl),
-                realized_pnl=str(position.realized_pnl),
-                leverage=position.leverage,
-                margin=str(position.margin_used),
-                liquidation_price=(
-                    "" if position.liquidation_price is None else str(position.liquidation_price)
-                ),
-                roe_pct=str(position.roe_pct),
-                # The id is the only durable evidence we hold that the venue
-                # actually carries this position's stop; the startup re-arm keeps
-                # it honest.
-                stop_order_id=position.stop_order_id,
-                protected=position.stop_order_id is not None,
+        positions = []
+        for position in state.open_positions:
+            protection = _protection_status(position)
+            positions.append(
+                PositionResponse(
+                    symbol=position.symbol,
+                    side=None if position.side is None else position.side.value,
+                    qty=str(position.qty),
+                    avg_entry=str(position.avg_entry),
+                    notional=str(position.notional),
+                    unrealized_pnl=str(position.unrealized_pnl),
+                    realized_pnl=str(position.realized_pnl),
+                    leverage=position.leverage,
+                    margin=str(position.margin_used),
+                    liquidation_price=(
+                        ""
+                        if position.liquidation_price is None
+                        else str(position.liquidation_price)
+                    ),
+                    roe_pct=str(position.roe_pct),
+                    # The id is the only durable evidence we hold that the venue
+                    # actually carries this position's stop; the startup re-arm keeps
+                    # it honest.
+                    stop_order_id=position.stop_order_id,
+                    stop_loss=None if position.stop_loss is None else str(position.stop_loss),
+                    take_profit=(
+                        None if position.take_profit is None else str(position.take_profit)
+                    ),
+                    protection=protection,
+                    # Any recorded stop counts as protection; ``protection`` says which
+                    # layer holds it, so a paper position is no longer called naked.
+                    protected=protection != "NAKED",
+                )
             )
-            for position in state.open_positions
-        ]
         return PositionsResponse(count=len(positions), positions=positions)
 
     # ---------------------------------------------------------- risk budget

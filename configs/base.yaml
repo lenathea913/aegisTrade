@@ -129,5 +129,9 @@ runner:
   monitor_enabled: true
 
 position_monitor:
-  use_live_price: false   # paper: act on the last closed candle only
+  # Real-time marks from apps/market_streamer (Redis), falling back to the last closed
+  # candle when the streamer is down. On by default because the 15m testnet feed can lag
+  # more than a bar (11+ minutes observed), and a monitor that only sees closed candles
+  # is blind to a stop being crossed in the middle of that bar.
+  use_live_price: true
   protect_take_profit: true

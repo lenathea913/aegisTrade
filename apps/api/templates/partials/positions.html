@@ -55,17 +55,24 @@
           {% else %}—{% endif %}
         </td>
         <td class="px-4 py-2">
-          {% if position.protected %}
+          {% if position.protection == 'VENUE_PROTECTED' %}
             <span
               class="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300"
-              title="Venue stop order {{ position.stop_order_id }}"
+              title="Stop is a live order at the venue: {{ position.stop_order_id }}"
             >
-              🔒 Locked
+              🔒 Venue
+            </span>
+          {% elif position.protection == 'BOOK_PROTECTED' %}
+            <span
+              class="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300"
+              title="Stop {{ position.stop_loss | price(position.symbol) }} is recorded in the book (no venue order id); the position monitor enforces it"
+            >
+              🔐 Book
             </span>
           {% else %}
             <span
               class="rounded bg-rose-500/10 px-2 py-0.5 text-xs text-rose-300"
-              title="No venue stop order is recorded for this position"
+              title="No stop loss at all for this position"
             >
               🔓 Naked
             </span>

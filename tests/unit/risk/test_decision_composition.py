@@ -30,7 +30,10 @@ def test_approval_records_every_check(
     decision = evaluate(small_intent, portfolio, limits, market)
 
     assert decision.approved is True
-    expected = {check.value for check in RiskCheck} - {RiskCheck.RISK_REDUCING_ORDER.value}
+    expected = {check.value for check in RiskCheck} - {
+        RiskCheck.RISK_REDUCING_ORDER.value,
+        RiskCheck.KILL_SWITCH_ALLOWS_EXIT.value,
+    }
     assert set(decision.reasons) == expected
     assert len(decision.reasons) == len(expected)
 

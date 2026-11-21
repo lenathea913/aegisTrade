@@ -5,6 +5,10 @@
 market_data:
   source: binance
 
+# Protect on real-time streamer marks, not only on the bar that already closed.
+position_monitor:
+  use_live_price: true
+
 observability:
   log_level: DEBUG
   json_logs: false            # readable console logs while developing
